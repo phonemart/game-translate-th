@@ -25,6 +25,8 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
 import com.google.mlkit.vision.common.InputImage
@@ -43,8 +45,12 @@ class OverlayService : Service() {
     private var imageReader: ImageReader? = null
     private var virtualDisplay: VirtualDisplay? = null
 
-    private var floatBtn: TextView? = null
+    private var bar: View? = null
     private var resultView: TextView? = null
+    private var regionView: FrameLayout? = null
+    private var regionLp: WindowManager.LayoutParams? = null
+    private var regionMode = false
+    private var regionToggle: TextView? = null
 
     private val main = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
@@ -65,7 +71,7 @@ class OverlayService : Service() {
         @Suppress("DEPRECATION")
         val data: Intent? = intent?.getParcelableExtra("data")
         if (code == 0 || data == null) {
-            toast("เริ่มไม่สำเร็จ ลองใหม่")
+            toast("เริ่มไม่สำเร็จ เปิดแอปแล้วกด \"เริ่ม\" อีกครั้ง")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -75,35 +81,47 @@ class OverlayService : Service() {
         sh = metrics.heightPixels
         dpi = metrics.densityDpi
 
-        val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        projection = mpm.getMediaProjection(code, data)
-        projection?.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() { cleanup() }
-        }, main)
+        try {
+            val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            projection = mpm.getMediaProjection(code, data)
+            projection?.registerCallback(object : MediaProjection.Callback() {
+                override fun onStop() { cleanup() }
+            }, main)
 
-        imageReader = ImageReader.newInstance(sw, sh, PixelFormat.RGBA_8888, 2)
-        virtualDisplay = projection?.createVirtualDisplay(
-            "gt_cap", sw, sh, dpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader!!.surface, null, main
-        )
-
-        showFloatingButton()
+            imageReader = ImageReader.newInstance(sw, sh, PixelFormat.RGBA_8888, 2)
+            virtualDisplay = projection?.createVirtualDisplay(
+                "gt_cap", sw, sh, dpi,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                imageReader!!.surface, null, main
+            )
+            showBar()
+        } catch (e: Exception) {
+            toast("เริ่มไม่สำเร็จ: ${e.message}")
+            stopSelf()
+        }
         return START_NOT_STICKY
     }
 
-    // ---------------- UI ----------------
+    // ---------------- floating bar ----------------
 
-    private fun showFloatingButton() {
-        if (floatBtn != null) return
-        val btn = TextView(this).apply {
-            text = "แปล"
-            setTextColor(Color.WHITE)
-            textSize = 16f
-            gravity = Gravity.CENTER
-            background = pill("#667EEA")
-            setPadding(dp(20), dp(12), dp(20), dp(12))
+    private fun showBar() {
+        if (bar != null) return
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            background = pill("#CC222633")
+            setPadding(dp(6), dp(6), dp(6), dp(6))
         }
+
+        val handle = chip("≡", "#44FFFFFF")
+        val translateBtn = chip("แปล", "#667EEA")
+        regionToggle = chip("▢ กรอบ", "#33FFFFFF")
+
+        container.addView(handle)
+        container.addView(space())
+        container.addView(translateBtn)
+        container.addView(space())
+        container.addView(regionToggle)
+
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -112,49 +130,146 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = sw - dp(120)
-            y = sh / 3
+            x = sw - dp(220)
+            y = dp(120)
         }
-        attachDrag(btn, lp) { onTranslateClick() }
-        windowManager.addView(btn, lp)
-        floatBtn = btn
+
+        attachDrag(handle, lp, container) {}
+        translateBtn.setOnClickListener { onTranslateClick() }
+        regionToggle?.setOnClickListener { toggleRegion() }
+
+        runCatching { windowManager.addView(container, lp) }
+        bar = container
     }
+
+    private fun toggleRegion() {
+        regionMode = !regionMode
+        if (regionMode) {
+            showRegion()
+            regionToggle?.text = "▣ กรอบ"
+            regionToggle?.background = pill("#FF5252")
+            toast("ลากย้ายกรอบ / ลากมุมขวาล่างปรับขนาด ครอบกล่องบทพูด")
+        } else {
+            regionView?.let { runCatching { windowManager.removeView(it) } }
+            regionView = null
+            regionToggle?.text = "▢ กรอบ"
+            regionToggle?.background = pill("#33FFFFFF")
+        }
+    }
+
+    private fun showRegion() {
+        if (regionView != null) return
+        val box = FrameLayout(this).apply {
+            background = GradientDrawable().apply {
+                setStroke(dp(3), Color.parseColor("#FF5252"))
+                setColor(Color.parseColor("#22FF5252"))
+            }
+        }
+        // resize handle ที่มุมขวาล่าง
+        val handle = View(this).apply {
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#FF5252"))
+                cornerRadius = dp(4).toFloat()
+            }
+        }
+        box.addView(handle, FrameLayout.LayoutParams(dp(40), dp(40)).apply {
+            gravity = Gravity.BOTTOM or Gravity.END
+        })
+
+        val lp = WindowManager.LayoutParams(
+            sw - dp(60),
+            dp(170),
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = dp(30)
+            y = (sh * 0.55).toInt()
+        }
+        regionLp = lp
+
+        // ลากตัวกรอบ = ย้าย
+        var sx = 0; var sy = 0; var tx = 0f; var ty = 0f
+        box.setOnTouchListener { _, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> { sx = lp.x; sy = lp.y; tx = e.rawX; ty = e.rawY; true }
+                MotionEvent.ACTION_MOVE -> {
+                    lp.x = sx + (e.rawX - tx).toInt()
+                    lp.y = sy + (e.rawY - ty).toInt()
+                    runCatching { windowManager.updateViewLayout(box, lp) }; true
+                }
+                else -> false
+            }
+        }
+        // ลาก handle = ปรับขนาด
+        var sw0 = 0; var sh0 = 0; var hx = 0f; var hy = 0f
+        handle.setOnTouchListener { _, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> { sw0 = lp.width; sh0 = lp.height; hx = e.rawX; hy = e.rawY; true }
+                MotionEvent.ACTION_MOVE -> {
+                    lp.width = (sw0 + (e.rawX - hx).toInt()).coerceAtLeast(dp(80))
+                    lp.height = (sh0 + (e.rawY - hy).toInt()).coerceAtLeast(dp(60))
+                    runCatching { windowManager.updateViewLayout(box, lp) }; true
+                }
+                else -> false
+            }
+        }
+
+        runCatching { windowManager.addView(box, lp) }
+        regionView = box
+    }
+
+    // ---------------- capture + translate ----------------
 
     private fun onTranslateClick() {
         if (busy) return
         busy = true
-        // hide our own overlays so they don't get captured / OCR'd
-        floatBtn?.visibility = View.GONE
+        bar?.visibility = View.GONE
+        regionView?.visibility = View.GONE
         removeResult()
         main.postDelayed({ captureAndTranslate() }, 250)
     }
 
     private fun captureAndTranslate() {
-        val bmp = grabBitmap()
-        floatBtn?.visibility = View.VISIBLE
+        val bmp = try { grabBitmap() } catch (e: Exception) { null }
+        bar?.visibility = View.VISIBLE
+        regionView?.visibility = View.VISIBLE
         if (bmp == null) {
             busy = false
-            toast("จับภาพหน้าจอไม่ได้")
+            showResult("จับภาพหน้าจอไม่ได้ ลองใหม่")
             return
         }
+        val target = if (regionMode) cropToRegion(bmp) else bmp
         showResult("กำลังอ่านข้อความ…")
-        val input = InputImage.fromBitmap(bmp, 0)
-        recognizer.process(input)
-            .addOnSuccessListener { vt ->
-                val text = vt.text.replace("\n", " ").trim()
-                bmp.recycle()
-                if (text.isBlank()) {
-                    showResult("ไม่พบข้อความบนหน้าจอ")
-                    busy = false
-                    return@addOnSuccessListener
+        try {
+            val input = InputImage.fromBitmap(target, 0)
+            recognizer.process(input)
+                .addOnSuccessListener { vt ->
+                    val text = vt.text.replace("\n", " ").trim()
+                    runCatching { if (target != bmp) target.recycle() }
+                    runCatching { bmp.recycle() }
+                    if (text.isBlank()) { showResult("ไม่พบข้อความ (ลองขยับ/ขยายกรอบ)"); busy = false; return@addOnSuccessListener }
+                    translate(text)
                 }
-                translate(text)
-            }
-            .addOnFailureListener {
-                bmp.recycle()
-                showResult("อ่านข้อความไม่สำเร็จ")
-                busy = false
-            }
+                .addOnFailureListener {
+                    runCatching { if (target != bmp) target.recycle() }
+                    runCatching { bmp.recycle() }
+                    showResult("อ่านข้อความไม่สำเร็จ"); busy = false
+                }
+        } catch (e: Exception) {
+            showResult("ผิดพลาด: ${e.message}"); busy = false
+        }
+    }
+
+    private fun cropToRegion(src: Bitmap): Bitmap {
+        val lp = regionLp ?: return src
+        val border = dp(3)
+        val x = (lp.x + border).coerceIn(0, sw - 1)
+        val y = (lp.y + border).coerceIn(0, sh - 1)
+        val w = (lp.width - border * 2).coerceIn(1, sw - x)
+        val h = (lp.height - border * 2).coerceIn(1, sh - y)
+        return try { Bitmap.createBitmap(src, x, y, w, h) } catch (e: Exception) { src }
     }
 
     private fun translate(text: String) {
@@ -165,12 +280,10 @@ class OverlayService : Service() {
             .orEmpty().ifBlank { MainActivity.DEFAULT_MODEL }
         scope.launch {
             val out = withContext(Dispatchers.IO) { GeminiClient.translate(key, model, text) }
-            showResult(out.removePrefix("ERROR: ").let { if (out.startsWith("ERROR")) "⚠️ $it" else it })
+            showResult(if (out.startsWith("ERROR")) "⚠️ ${out.removePrefix("ERROR: ")}" else out)
             busy = false
         }
     }
-
-    // ---------------- capture ----------------
 
     private fun grabBitmap(): Bitmap? {
         val reader = imageReader ?: return null
@@ -187,9 +300,7 @@ class OverlayService : Service() {
             val pixelStride = plane.pixelStride
             val rowStride = plane.rowStride
             val rowPadding = rowStride - pixelStride * sw
-            val full = Bitmap.createBitmap(
-                sw + rowPadding / pixelStride, sh, Bitmap.Config.ARGB_8888
-            )
+            val full = Bitmap.createBitmap(sw + rowPadding / pixelStride, sh, Bitmap.Config.ARGB_8888)
             full.copyPixelsFromBuffer(buffer)
             val cropped = Bitmap.createBitmap(full, 0, 0, sw, sh)
             if (cropped != full) full.recycle()
@@ -197,36 +308,38 @@ class OverlayService : Service() {
         } catch (e: Exception) {
             null
         } finally {
-            img.close()
+            runCatching { img.close() }
         }
     }
 
-    // ---------------- result overlay ----------------
+    // ---------------- result ----------------
 
     private fun showResult(msg: String) {
         main.post {
-            if (resultView == null) {
-                val tv = TextView(this).apply {
-                    setTextColor(Color.WHITE)
-                    textSize = 18f
-                    background = pill("#DD000000")
-                    setPadding(dp(18), dp(14), dp(18), dp(14))
-                    setOnClickListener { removeResult() }
+            try {
+                if (resultView == null) {
+                    val tv = TextView(this).apply {
+                        setTextColor(Color.WHITE)
+                        textSize = 18f
+                        background = pill("#DD000000")
+                        setPadding(dp(18), dp(14), dp(18), dp(14))
+                        setOnClickListener { removeResult() }
+                    }
+                    val lp = WindowManager.LayoutParams(
+                        sw - dp(24),
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        overlayType(),
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                        PixelFormat.TRANSLUCENT
+                    ).apply {
+                        gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                        y = dp(60)
+                    }
+                    windowManager.addView(tv, lp)
+                    resultView = tv
                 }
-                val lp = WindowManager.LayoutParams(
-                    sw - dp(24),
-                    WindowManager.LayoutParams.WRAP_CONTENT,
-                    overlayType(),
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
-                    PixelFormat.TRANSLUCENT
-                ).apply {
-                    gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-                    y = dp(60)
-                }
-                windowManager.addView(tv, lp)
-                resultView = tv
-            }
-            resultView?.text = msg
+                resultView?.text = msg
+            } catch (_: Exception) {}
         }
     }
 
@@ -237,41 +350,43 @@ class OverlayService : Service() {
 
     // ---------------- helpers ----------------
 
-    private fun attachDrag(view: View, lp: WindowManager.LayoutParams, onClick: () -> Unit) {
-        var startX = 0
-        var startY = 0
-        var touchX = 0f
-        var touchY = 0f
-        var moved = false
-        view.setOnTouchListener { _, e ->
+    private fun attachDrag(
+        grip: View, lp: WindowManager.LayoutParams, moveTarget: View, onClick: () -> Unit
+    ) {
+        var startX = 0; var startY = 0; var touchX = 0f; var touchY = 0f; var moved = false
+        grip.setOnTouchListener { _, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
-                    startX = lp.x; startY = lp.y
-                    touchX = e.rawX; touchY = e.rawY
-                    moved = false
-                    true
+                    startX = lp.x; startY = lp.y; touchX = e.rawX; touchY = e.rawY; moved = false; true
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    val dx = (e.rawX - touchX).toInt()
-                    val dy = (e.rawY - touchY).toInt()
+                    val dx = (e.rawX - touchX).toInt(); val dy = (e.rawY - touchY).toInt()
                     if (kotlin.math.abs(dx) > dp(8) || kotlin.math.abs(dy) > dp(8)) moved = true
-                    lp.x = startX + dx
-                    lp.y = startY + dy
-                    runCatching { windowManager.updateViewLayout(view, lp) }
-                    true
+                    lp.x = startX + dx; lp.y = startY + dy
+                    runCatching { windowManager.updateViewLayout(moveTarget, lp) }; true
                 }
-                MotionEvent.ACTION_UP -> {
-                    if (!moved) onClick()
-                    true
-                }
+                MotionEvent.ACTION_UP -> { if (!moved) onClick(); true }
                 else -> false
             }
         }
     }
 
+    private fun chip(text: String, color: String) = TextView(this).apply {
+        this.text = text
+        setTextColor(Color.WHITE)
+        textSize = 15f
+        gravity = Gravity.CENTER
+        background = pill(color)
+        setPadding(dp(16), dp(10), dp(16), dp(10))
+    }
+
+    private fun space() = View(this).apply {
+        layoutParams = LinearLayout.LayoutParams(dp(6), 1)
+    }
+
     private fun pill(color: String) = GradientDrawable().apply {
         setColor(Color.parseColor(color))
-        cornerRadius = dp(24).toFloat()
+        cornerRadius = dp(22).toFloat()
     }
 
     private fun overlayType() =
@@ -304,11 +419,9 @@ class OverlayService : Service() {
         runCatching { virtualDisplay?.release() }
         runCatching { imageReader?.close() }
         runCatching { projection?.stop() }
-        virtualDisplay = null
-        imageReader = null
-        projection = null
-        floatBtn?.let { runCatching { windowManager.removeView(it) } }
-        floatBtn = null
+        virtualDisplay = null; imageReader = null; projection = null
+        bar?.let { runCatching { windowManager.removeView(it) } }; bar = null
+        regionView?.let { runCatching { windowManager.removeView(it) } }; regionView = null
         removeResult()
     }
 
@@ -318,6 +431,5 @@ class OverlayService : Service() {
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
-    private fun toast(s: String) =
-        main.post { Toast.makeText(this, s, Toast.LENGTH_SHORT).show() }
+    private fun toast(s: String) = main.post { Toast.makeText(this, s, Toast.LENGTH_SHORT).show() }
 }
