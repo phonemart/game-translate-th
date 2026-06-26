@@ -29,12 +29,14 @@ class MainActivity : Activity() {
     private lateinit var prefs: SharedPreferences
     private lateinit var keyInput: EditText
     private lateinit var modelInput: EditText
+    private lateinit var gameInput: EditText
     private lateinit var statusView: TextView
 
     companion object {
         const val PREFS = "gt_prefs"
         const val KEY_API = "api_key"
         const val KEY_MODEL = "model"
+        const val KEY_GAME = "game"
         const val DEFAULT_MODEL = "gemini-2.5-flash"
         private const val REQ_PROJECTION = 1001
         private const val REQ_OVERLAY = 1002
@@ -80,6 +82,15 @@ class MainActivity : Activity() {
             setText(prefs.getString(KEY_API, ""))
         }
         root.addView(keyInput)
+
+        // ---- game / context ----
+        root.addView(label("ชื่อเกมที่กำลังเล่น (ช่วยให้แปลตรงบริบท)"))
+        gameInput = EditText(this).apply {
+            inputType = InputType.TYPE_CLASS_TEXT
+            hint = "เช่น Pokemon FireRed, Final Fantasy VII, Persona 5"
+            setText(prefs.getString(KEY_GAME, ""))
+        }
+        root.addView(gameInput)
 
         // ---- model dropdown ----
         root.addView(label("เลือกโมเดล"))
@@ -181,6 +192,7 @@ class MainActivity : Activity() {
         prefs.edit()
             .putString(KEY_API, keyInput.text.toString().trim())
             .putString(KEY_MODEL, modelInput.text.toString().trim().ifBlank { DEFAULT_MODEL })
+            .putString(KEY_GAME, gameInput.text.toString().trim())
             .apply()
     }
 

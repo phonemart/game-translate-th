@@ -278,8 +278,9 @@ class OverlayService : Service() {
         val key = prefs.getString(MainActivity.KEY_API, "").orEmpty()
         val model = prefs.getString(MainActivity.KEY_MODEL, MainActivity.DEFAULT_MODEL)
             .orEmpty().ifBlank { MainActivity.DEFAULT_MODEL }
+        val game = prefs.getString(MainActivity.KEY_GAME, "").orEmpty()
         scope.launch {
-            val out = withContext(Dispatchers.IO) { GeminiClient.translate(key, model, text) }
+            val out = withContext(Dispatchers.IO) { GeminiClient.translate(key, model, text, game) }
             showResult(if (out.startsWith("ERROR")) "⚠️ ${out.removePrefix("ERROR: ")}" else out)
             busy = false
         }

@@ -21,18 +21,22 @@ object GeminiClient {
     private val JSON = "application/json; charset=utf-8".toMediaType()
 
     /**
+     * @param gameContext ชื่อเกม/บริบทที่ผู้ใช้ระบุ (เว้นว่างได้) เพื่อช่วยให้แปลตรงบริบทเกม
      * @return translated Thai text, or a string beginning with "ERROR:" on failure.
      */
-    fun translate(apiKey: String, model: String, sourceText: String): String {
+    fun translate(apiKey: String, model: String, sourceText: String, gameContext: String = ""): String {
         if (apiKey.isBlank()) return "ERROR: ยังไม่ได้ใส่ Gemini API Key"
         if (sourceText.isBlank()) return "ERROR: ไม่พบข้อความบนหน้าจอ"
+
+        val contextLine = if (gameContext.isBlank()) ""
+        else "ข้อความนี้มาจากเกม \"$gameContext\" — ใช้ชื่อตัวละคร/สถานที่/ศัพท์เฉพาะ และโทนของเกมนี้ให้ถูกต้อง\n\n"
 
         val prompt = """
             คุณเป็นนักแปลเกมมืออาชีพ แปลข้อความต่อไปนี้ที่ดึงมาจากหน้าจอเกมให้เป็นภาษาไทย
             โดยแปลแบบเป็นธรรมชาติ ลื่นไหล เข้าใจบริบท เหมือนบทพากย์/คำบรรยายในเกมจริง
             ห้ามอธิบายเพิ่ม ตอบกลับมาเฉพาะคำแปลภาษาไทยเท่านั้น
 
-            ข้อความ:
+            ${contextLine}ข้อความ:
             $sourceText
         """.trimIndent()
 
