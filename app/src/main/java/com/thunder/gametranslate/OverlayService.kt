@@ -7,6 +7,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.content.res.Configuration
+import android.util.DisplayMetrics
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.PixelFormat
@@ -54,6 +56,7 @@ class OverlayService : Service() {
     private var regionToggle: TextView? = null
 
     private val main = Handler(Looper.getMainLooper())
+    private val dismissRunnable = Runnable { removeResult() }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
@@ -86,10 +89,7 @@ class OverlayService : Service() {
             return START_NOT_STICKY
         }
 
-        val metrics = resources.displayMetrics
-        sw = metrics.widthPixels
-        sh = metrics.heightPixels
-        dpi = metrics.densityDpi
+        readRealSize()
 
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -98,52 +98,99 @@ class OverlayService : Service() {
                 override fun onStop() { cleanup() }
             }, main)
 
-            imageReader = ImageReader.newInstance(sw, sh, PixelFormat.RGBA_8888, 3)
-            // background thread อ่านเฟรมต่อเนื่อง เก็บเฟรมล่าสุดไว้เสมอ
             captureThread = HandlerThread("gt_capture").also { it.start() }
             captureHandler = Handler(captureThread!!.looper)
-            imageReader?.setOnImageAvailableListener({ reader ->
-                val image = try { reader.acquireLatestImage() } catch (e: Exception) { null }
-                    ?: return@setOnImageAvailableListener
-                // throttle: copy เฟรมอย่างมากทุก ~200ms (drain buffer ทุกครั้งแต่ไม่ copy ถี่)
-                val now = SystemClock.uptimeMillis()
-                if (now - lastCapMs < 200) { runCatching { image.close() }; return@setOnImageAvailableListener }
-                lastCapMs = now
-                try {
-                    val plane = image.planes[0]
-                    val buffer = plane.buffer
-                    val pixelStride = plane.pixelStride
-                    val rowStride = plane.rowStride
-                    val rowPadding = rowStride - pixelStride * sw
-                    val full = Bitmap.createBitmap(
-                        sw + rowPadding / pixelStride, sh, Bitmap.Config.ARGB_8888
-                    )
-                    full.copyPixelsFromBuffer(buffer)
-                    val cropped = Bitmap.createBitmap(full, 0, 0, sw, sh)
-                    if (cropped != full) full.recycle()
-                    synchronized(frameLock) {
-                        latestFrame?.let { runCatching { it.recycle() } }
-                        latestFrame = cropped
-                    }
-                    frameCount++
-                    captureErr = null
-                } catch (e: Exception) {
-                    captureErr = e.message
-                } finally {
-                    runCatching { image.close() }
-                }
-            }, captureHandler)
-            virtualDisplay = projection?.createVirtualDisplay(
-                "gt_cap", sw, sh, dpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader!!.surface, null, captureHandler
-            )
+
+            setupCapture()
             showBar()
         } catch (e: Exception) {
             toast("เริ่มไม่สำเร็จ: ${e.message}")
             stopSelf()
         }
         return START_NOT_STICKY
+    }
+
+    /** อ่านขนาดจอจริงปัจจุบัน (รองรับการหมุนจอ) */
+    private fun readRealSize() {
+        try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                val b = windowManager.maximumWindowMetrics.bounds
+                sw = b.width(); sh = b.height()
+            } else {
+                val dm = DisplayMetrics()
+                @Suppress("DEPRECATION") windowManager.defaultDisplay.getRealMetrics(dm)
+                sw = dm.widthPixels; sh = dm.heightPixels
+            }
+        } catch (e: Exception) {
+            val dm = resources.displayMetrics
+            sw = dm.widthPixels; sh = dm.heightPixels
+        }
+        dpi = resources.displayMetrics.densityDpi
+        if (sw <= 0) sw = 1080
+        if (sh <= 0) sh = 1920
+    }
+
+    /** สร้าง ImageReader + VirtualDisplay ตามขนาด sw,sh ปัจจุบัน */
+    private fun setupCapture() {
+        val handler = captureHandler ?: return
+        val reader = ImageReader.newInstance(sw, sh, PixelFormat.RGBA_8888, 3)
+        reader.setOnImageAvailableListener({ r ->
+            val image = try { r.acquireLatestImage() } catch (e: Exception) { null }
+                ?: return@setOnImageAvailableListener
+            val now = SystemClock.uptimeMillis()
+            if (now - lastCapMs < 200) { runCatching { image.close() }; return@setOnImageAvailableListener }
+            lastCapMs = now
+            try {
+                val plane = image.planes[0]
+                val buffer = plane.buffer
+                val pixelStride = plane.pixelStride
+                val rowStride = plane.rowStride
+                val w = image.width
+                val h = image.height
+                val rowPadding = rowStride - pixelStride * w
+                val full = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+                full.copyPixelsFromBuffer(buffer)
+                val cropped = Bitmap.createBitmap(full, 0, 0, w, h)
+                if (cropped != full) full.recycle()
+                synchronized(frameLock) {
+                    latestFrame?.let { runCatching { it.recycle() } }
+                    latestFrame = cropped
+                }
+                frameCount++
+                captureErr = null
+            } catch (e: Exception) {
+                captureErr = e.message
+            } finally {
+                runCatching { image.close() }
+            }
+        }, handler)
+        virtualDisplay = projection?.createVirtualDisplay(
+            "gt_cap", sw, sh, dpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            reader.surface, null, handler
+        )
+        imageReader = reader
+    }
+
+    /** สร้างการจับภาพใหม่เมื่อขนาดจอเปลี่ยน (หมุนจอ) */
+    private fun rebuildCapture() {
+        if (projection == null) return
+        val ow = sw; val oh = sh
+        readRealSize()
+        if (sw == ow && sh == oh && virtualDisplay != null) return
+        runCatching { virtualDisplay?.release() }
+        runCatching { imageReader?.setOnImageAvailableListener(null, null) }
+        runCatching { imageReader?.close() }
+        virtualDisplay = null; imageReader = null
+        synchronized(frameLock) { latestFrame?.let { runCatching { it.recycle() } }; latestFrame = null }
+        lastCapMs = 0L
+        setupCapture()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // รอจอหมุนเสร็จก่อน แล้วค่อยสร้าง capture ใหม่ตามขนาดใหม่
+        main.postDelayed({ runCatching { rebuildCapture() } }, 350)
     }
 
     // ---------------- floating bar ----------------
@@ -380,11 +427,15 @@ class OverlayService : Service() {
                     resultView = tv
                 }
                 resultView?.text = msg
+                // หายเองใน ~7 วิ (แตะปิดเองได้)
+                main.removeCallbacks(dismissRunnable)
+                main.postDelayed(dismissRunnable, 7000)
             } catch (_: Exception) {}
         }
     }
 
     private fun removeResult() {
+        main.removeCallbacks(dismissRunnable)
         resultView?.let { runCatching { windowManager.removeView(it) } }
         resultView = null
     }

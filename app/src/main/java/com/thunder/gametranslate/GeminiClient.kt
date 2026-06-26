@@ -40,13 +40,20 @@ object GeminiClient {
             $sourceText
         """.trimIndent()
 
+        val genConfig = JSONObject().put("temperature", 0.3)
+        // ปิดโหมด "คิด" (thinking) ในรุ่นที่รองรับ → ตอบเร็วขึ้นมาก เหมาะกับงานแปลสั้นๆ
+        val m = model.lowercase()
+        if (m.contains("2.5") || m.contains("flash-latest") || m.contains("latest")) {
+            genConfig.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        }
+
         val body = JSONObject().apply {
             put("contents", org.json.JSONArray().put(
                 JSONObject().put("parts", org.json.JSONArray().put(
                     JSONObject().put("text", prompt)
                 ))
             ))
-            put("generationConfig", JSONObject().put("temperature", 0.3))
+            put("generationConfig", genConfig)
         }.toString()
 
         val url = "https://generativelanguage.googleapis.com/v1beta/models/" +
