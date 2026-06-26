@@ -22,8 +22,20 @@ android {
         buildConfig true
     }
 
+    // กุญแจเซ็นคงที่ (commit ไว้ใน repo) เพื่อให้ทุก build ลายเซ็นตรงกัน → อัปเดตทับได้
+    signingConfigs {
+        debug {
+            storeFile file("$rootDir/gt.p12")
+            storePassword "gametranslate"
+            keyAlias "gt"
+            keyPassword "gametranslate"
+            storeType "PKCS12"
+        }
+    }
+
     buildTypes {
         debug {
+            signingConfig signingConfigs.debug
         }
     }
 
