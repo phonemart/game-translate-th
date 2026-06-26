@@ -70,6 +70,11 @@ class OverlayService : Service() {
     private var dpi = 0
     private var busy = false
 
+    // แคชคำแปล (LRU) — กดแปลข้อความเดิมซ้ำ → คืนทันที ไม่ยิง API
+    private val cache = object : LinkedHashMap<String, String>(16, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>?): Boolean = size > 80
+    }
+
     // เก็บเฟรมล่าสุดแบบต่อเนื่อง (กันปัญหา "จับภาพหน้าจอไม่ได้")
     private var captureThread: HandlerThread? = null
     private var captureHandler: Handler? = null
@@ -408,14 +413,24 @@ class OverlayService : Service() {
     }
 
     private fun translate(text: String) {
-        showResult("กำลังแปล…")
         val prefs = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
         val key = prefs.getString(MainActivity.KEY_API, "").orEmpty()
         val model = prefs.getString(MainActivity.KEY_MODEL, MainActivity.DEFAULT_MODEL)
             .orEmpty().ifBlank { MainActivity.DEFAULT_MODEL }
         val game = prefs.getString(MainActivity.KEY_GAME, "").orEmpty()
+
+        // แคช: ข้อความเดิม (+เกม+โมเดล) → คืนทันที ไม่ยิง API
+        val cacheKey = "$model|$game|$text"
+        synchronized(cache) { cache[cacheKey] }?.let { cached ->
+            showResult(cached)
+            busy = false
+            return
+        }
+
+        showResult("กำลังแปล…")
         scope.launch {
             val out = withContext(Dispatchers.IO) { GeminiClient.translate(key, model, text, game) }
+            if (!out.startsWith("ERROR")) synchronized(cache) { cache[cacheKey] = out }
             showResult(if (out.startsWith("ERROR")) "⚠️ ${out.removePrefix("ERROR: ")}" else out)
             busy = false
         }

@@ -71,6 +71,11 @@ object GeminiClient {
                     val msg = runCatching {
                         JSONObject(text).getJSONObject("error").getString("message")
                     }.getOrDefault(text.take(200))
+                    if (resp.code == 429) {
+                        val sec = Regex("retry in ([0-9]+)").find(msg)?.groupValues?.get(1)
+                        val wait = if (sec != null) "รออีก ~${sec}s" else "รอสักครู่"
+                        return "ERROR: ⏳ โควต้า Gemini ฟรีเต็มชั่วคราว (จำกัด ~20 ครั้ง/นาที) — $wait แล้วลองใหม่"
+                    }
                     return "ERROR: (${resp.code}) $msg"
                 }
                 parseTranslation(text)
