@@ -13,14 +13,15 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
-import android.media.Image
 import android.media.ImageReader
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -61,6 +62,15 @@ class OverlayService : Service() {
     private var dpi = 0
     private var busy = false
 
+    // เก็บเฟรมล่าสุดแบบต่อเนื่อง (กันปัญหา "จับภาพหน้าจอไม่ได้")
+    private var captureThread: HandlerThread? = null
+    private var captureHandler: Handler? = null
+    private val frameLock = Any()
+    @Volatile private var latestFrame: Bitmap? = null
+    @Volatile private var captureErr: String? = null
+    @Volatile private var frameCount = 0
+    @Volatile private var lastCapMs = 0L
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -88,11 +98,45 @@ class OverlayService : Service() {
                 override fun onStop() { cleanup() }
             }, main)
 
-            imageReader = ImageReader.newInstance(sw, sh, PixelFormat.RGBA_8888, 2)
+            imageReader = ImageReader.newInstance(sw, sh, PixelFormat.RGBA_8888, 3)
+            // background thread อ่านเฟรมต่อเนื่อง เก็บเฟรมล่าสุดไว้เสมอ
+            captureThread = HandlerThread("gt_capture").also { it.start() }
+            captureHandler = Handler(captureThread!!.looper)
+            imageReader?.setOnImageAvailableListener({ reader ->
+                val image = try { reader.acquireLatestImage() } catch (e: Exception) { null }
+                    ?: return@setOnImageAvailableListener
+                // throttle: copy เฟรมอย่างมากทุก ~200ms (drain buffer ทุกครั้งแต่ไม่ copy ถี่)
+                val now = SystemClock.uptimeMillis()
+                if (now - lastCapMs < 200) { runCatching { image.close() }; return@setOnImageAvailableListener }
+                lastCapMs = now
+                try {
+                    val plane = image.planes[0]
+                    val buffer = plane.buffer
+                    val pixelStride = plane.pixelStride
+                    val rowStride = plane.rowStride
+                    val rowPadding = rowStride - pixelStride * sw
+                    val full = Bitmap.createBitmap(
+                        sw + rowPadding / pixelStride, sh, Bitmap.Config.ARGB_8888
+                    )
+                    full.copyPixelsFromBuffer(buffer)
+                    val cropped = Bitmap.createBitmap(full, 0, 0, sw, sh)
+                    if (cropped != full) full.recycle()
+                    synchronized(frameLock) {
+                        latestFrame?.let { runCatching { it.recycle() } }
+                        latestFrame = cropped
+                    }
+                    frameCount++
+                    captureErr = null
+                } catch (e: Exception) {
+                    captureErr = e.message
+                } finally {
+                    runCatching { image.close() }
+                }
+            }, captureHandler)
             virtualDisplay = projection?.createVirtualDisplay(
                 "gt_cap", sw, sh, dpi,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                imageReader!!.surface, null, main
+                imageReader!!.surface, null, captureHandler
             )
             showBar()
         } catch (e: Exception) {
@@ -237,7 +281,8 @@ class OverlayService : Service() {
         regionView?.visibility = View.VISIBLE
         if (bmp == null) {
             busy = false
-            showResult("จับภาพหน้าจอไม่ได้ ลองใหม่")
+            val reason = captureErr?.let { " ($it)" } ?: ""
+            showResult("จับภาพหน้าจอไม่ได้ ลองใหม่$reason")
             return
         }
         val target = if (regionMode) cropToRegion(bmp) else bmp
@@ -287,29 +332,24 @@ class OverlayService : Service() {
     }
 
     private fun grabBitmap(): Bitmap? {
-        val reader = imageReader ?: return null
-        var image: Image? = null
-        repeat(3) {
-            image = reader.acquireLatestImage()
-            if (image != null) return@repeat
-            try { Thread.sleep(60) } catch (_: Exception) {}
+        if (imageReader == null) { captureErr = "ยังไม่ได้เริ่มจับภาพ"; return null }
+        // รอเฟรมแรกได้นานสุด ~2 วินาที (หลังจากนั้นมีเฟรมล่าสุดเสมอ)
+        var tries = 0
+        while (latestFrame == null && tries < 20) {
+            try { Thread.sleep(100) } catch (_: Exception) {}
+            tries++
         }
-        val img = image ?: return null
-        return try {
-            val plane = img.planes[0]
-            val buffer = plane.buffer
-            val pixelStride = plane.pixelStride
-            val rowStride = plane.rowStride
-            val rowPadding = rowStride - pixelStride * sw
-            val full = Bitmap.createBitmap(sw + rowPadding / pixelStride, sh, Bitmap.Config.ARGB_8888)
-            full.copyPixelsFromBuffer(buffer)
-            val cropped = Bitmap.createBitmap(full, 0, 0, sw, sh)
-            if (cropped != full) full.recycle()
-            cropped
-        } catch (e: Exception) {
-            null
-        } finally {
-            runCatching { img.close() }
+        synchronized(frameLock) {
+            val l = latestFrame
+            if (l == null) {
+                if (captureErr == null) captureErr = "ยังไม่มีเฟรมจากหน้าจอ"
+                return null
+            }
+            return try {
+                l.copy(Bitmap.Config.ARGB_8888, false)
+            } catch (e: Exception) {
+                captureErr = e.message; null
+            }
         }
     }
 
@@ -418,8 +458,12 @@ class OverlayService : Service() {
 
     private fun cleanup() {
         runCatching { virtualDisplay?.release() }
+        runCatching { imageReader?.setOnImageAvailableListener(null, null) }
         runCatching { imageReader?.close() }
         runCatching { projection?.stop() }
+        runCatching { captureThread?.quitSafely() }
+        captureThread = null; captureHandler = null
+        synchronized(frameLock) { latestFrame?.let { runCatching { it.recycle() } }; latestFrame = null }
         virtualDisplay = null; imageReader = null; projection = null
         bar?.let { runCatching { windowManager.removeView(it) } }; bar = null
         regionView?.let { runCatching { windowManager.removeView(it) } }; regionView = null
