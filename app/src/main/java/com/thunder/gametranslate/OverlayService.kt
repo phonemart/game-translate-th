@@ -50,10 +50,15 @@ class OverlayService : Service() {
 
     private var bar: View? = null
     private var resultView: TextView? = null
-    private var regionView: FrameLayout? = null
-    private var regionLp: WindowManager.LayoutParams? = null
-    private var regionMode = false
+    private var resultLp: WindowManager.LayoutParams? = null
+    private var regionView: FrameLayout? = null      // กล่อง edit (แสดงเฉพาะตอนจัดกรอบ)
     private var regionToggle: TextView? = null
+
+    // พื้นที่แปล เก็บเป็นสัดส่วนของจอ (รองรับหมุนจอ) — default = แถบล่างกลางจอ
+    private var fx = 0.15f
+    private var fy = 0.70f
+    private var fw = 0.70f
+    private var fh = 0.24f
 
     private val main = Handler(Looper.getMainLooper())
     private val dismissRunnable = Runnable { removeResult() }
@@ -90,6 +95,7 @@ class OverlayService : Service() {
         }
 
         readRealSize()
+        loadRegion()
 
         try {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
@@ -185,6 +191,15 @@ class OverlayService : Service() {
         synchronized(frameLock) { latestFrame?.let { runCatching { it.recycle() } }; latestFrame = null }
         lastCapMs = 0L
         setupCapture()
+        // ถ้ากำลังจัดกรอบอยู่ ย้ายกล่อง edit ให้ตรงตำแหน่งใหม่ตามสัดส่วน
+        regionView?.let { box ->
+            (box.layoutParams as? WindowManager.LayoutParams)?.let { lp ->
+                lp.x = (fx * sw).toInt(); lp.y = (fy * sh).toInt()
+                lp.width = (fw * sw).toInt().coerceAtLeast(dp(100))
+                lp.height = (fh * sh).toInt().coerceAtLeast(dp(70))
+                runCatching { windowManager.updateViewLayout(box, lp) }
+            }
+        }
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -227,81 +242,94 @@ class OverlayService : Service() {
 
         attachDrag(handle, lp, container) {}
         translateBtn.setOnClickListener { onTranslateClick() }
-        regionToggle?.setOnClickListener { toggleRegion() }
+        regionToggle?.setOnClickListener { toggleEdit() }
 
         runCatching { windowManager.addView(container, lp) }
         bar = container
     }
 
-    private fun toggleRegion() {
-        regionMode = !regionMode
-        if (regionMode) {
-            showRegion()
-            regionToggle?.text = "▣ กรอบ"
-            regionToggle?.background = pill("#FF5252")
-            toast("ลากย้ายกรอบ / ลากมุมขวาล่างปรับขนาด ครอบกล่องบทพูด")
+    // ---------------- ตั้งกรอบ (edit mode) ----------------
+
+    private fun toggleEdit() {
+        if (regionView == null) {
+            showEditBox()
+            regionToggle?.text = "✓ เสร็จ"
+            regionToggle?.background = pill("#4CAF50")
+            toast("ลากจัดกรอบให้ครอบกล่องบทพูด แล้วกด \"เสร็จ\"")
         } else {
-            regionView?.let { runCatching { windowManager.removeView(it) } }
-            regionView = null
-            regionToggle?.text = "▢ กรอบ"
-            regionToggle?.background = pill("#33FFFFFF")
+            saveRegion()
+            hideEditBox()
+            resetRegionBtn()
+            toast("บันทึกแล้ว — กด \"แปล\" คำแปลจะขึ้นในกรอบนี้")
         }
     }
 
-    private fun showRegion() {
+    private fun resetRegionBtn() {
+        regionToggle?.text = "▢ กรอบ"
+        regionToggle?.background = pill("#33FFFFFF")
+    }
+
+    private fun showEditBox() {
         if (regionView != null) return
         val box = FrameLayout(this).apply {
             background = GradientDrawable().apply {
-                setStroke(dp(3), Color.parseColor("#FF5252"))
-                setColor(Color.parseColor("#22FF5252"))
+                setColor(Color.parseColor("#F2FFFFFF"))   // ขาวเกือบทึบ
+                cornerRadius = dp(16).toFloat()
+                setStroke(dp(3), Color.parseColor("#4CAF50"))
             }
         }
-        // resize handle ที่มุมขวาล่าง
+        box.addView(TextView(this@OverlayService).apply {
+            text = "พื้นที่ที่จะแปล\nลากย้าย • ลากมุมขวาล่างปรับขนาด"
+            setTextColor(Color.parseColor("#2E7D32"))
+            textSize = 13f
+            gravity = Gravity.CENTER
+        }, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
+        ))
         val handle = View(this).apply {
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#FF5252"))
-                cornerRadius = dp(4).toFloat()
+                setColor(Color.parseColor("#4CAF50")); cornerRadius = dp(4).toFloat()
             }
         }
-        box.addView(handle, FrameLayout.LayoutParams(dp(40), dp(40)).apply {
+        box.addView(handle, FrameLayout.LayoutParams(dp(44), dp(44)).apply {
             gravity = Gravity.BOTTOM or Gravity.END
         })
 
         val lp = WindowManager.LayoutParams(
-            sw - dp(60),
-            dp(170),
+            (fw * sw).toInt().coerceAtLeast(dp(100)),
+            (fh * sh).toInt().coerceAtLeast(dp(70)),
             overlayType(),
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = dp(30)
-            y = (sh * 0.55).toInt()
+            x = (fx * sw).toInt(); y = (fy * sh).toInt()
         }
-        regionLp = lp
 
-        // ลากตัวกรอบ = ย้าย
+        fun sync() {
+            fx = lp.x.toFloat() / sw; fy = lp.y.toFloat() / sh
+            fw = lp.width.toFloat() / sw; fh = lp.height.toFloat() / sh
+        }
+
         var sx = 0; var sy = 0; var tx = 0f; var ty = 0f
         box.setOnTouchListener { _, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> { sx = lp.x; sy = lp.y; tx = e.rawX; ty = e.rawY; true }
                 MotionEvent.ACTION_MOVE -> {
-                    lp.x = sx + (e.rawX - tx).toInt()
-                    lp.y = sy + (e.rawY - ty).toInt()
-                    runCatching { windowManager.updateViewLayout(box, lp) }; true
+                    lp.x = sx + (e.rawX - tx).toInt(); lp.y = sy + (e.rawY - ty).toInt()
+                    runCatching { windowManager.updateViewLayout(box, lp) }; sync(); true
                 }
                 else -> false
             }
         }
-        // ลาก handle = ปรับขนาด
-        var sw0 = 0; var sh0 = 0; var hx = 0f; var hy = 0f
+        var w0 = 0; var h0 = 0; var hx = 0f; var hy = 0f
         handle.setOnTouchListener { _, e ->
             when (e.action) {
-                MotionEvent.ACTION_DOWN -> { sw0 = lp.width; sh0 = lp.height; hx = e.rawX; hy = e.rawY; true }
+                MotionEvent.ACTION_DOWN -> { w0 = lp.width; h0 = lp.height; hx = e.rawX; hy = e.rawY; true }
                 MotionEvent.ACTION_MOVE -> {
-                    lp.width = (sw0 + (e.rawX - hx).toInt()).coerceAtLeast(dp(80))
-                    lp.height = (sh0 + (e.rawY - hy).toInt()).coerceAtLeast(dp(60))
-                    runCatching { windowManager.updateViewLayout(box, lp) }; true
+                    lp.width = (w0 + (e.rawX - hx).toInt()).coerceAtLeast(dp(100))
+                    lp.height = (h0 + (e.rawY - hy).toInt()).coerceAtLeast(dp(70))
+                    runCatching { windowManager.updateViewLayout(box, lp) }; sync(); true
                 }
                 else -> false
             }
@@ -311,29 +339,46 @@ class OverlayService : Service() {
         regionView = box
     }
 
+    private fun hideEditBox() {
+        regionView?.let { runCatching { windowManager.removeView(it) } }
+        regionView = null
+    }
+
+    private fun saveRegion() {
+        getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE).edit()
+            .putString("region", "$fx,$fy,$fw,$fh").apply()
+    }
+
+    private fun loadRegion() {
+        val s = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+            .getString("region", null) ?: return
+        val p = s.split(",").mapNotNull { it.toFloatOrNull() }
+        if (p.size == 4) { fx = p[0]; fy = p[1]; fw = p[2]; fh = p[3] }
+    }
+
     // ---------------- capture + translate ----------------
 
     private fun onTranslateClick() {
         if (busy) return
         busy = true
+        // ออกจากโหมดจัดกรอบถ้าเปิดอยู่ + ซ่อนแถบ/คำแปลเก่า ก่อนจับภาพ
+        if (regionView != null) { saveRegion(); hideEditBox(); resetRegionBtn() }
         bar?.visibility = View.GONE
-        regionView?.visibility = View.GONE
         removeResult()
-        main.postDelayed({ captureAndTranslate() }, 250)
+        main.postDelayed({ captureAndTranslate() }, 220)
     }
 
     private fun captureAndTranslate() {
         val bmp = try { grabBitmap() } catch (e: Exception) { null }
         bar?.visibility = View.VISIBLE
-        regionView?.visibility = View.VISIBLE
         if (bmp == null) {
             busy = false
             val reason = captureErr?.let { " ($it)" } ?: ""
             showResult("จับภาพหน้าจอไม่ได้ ลองใหม่$reason")
             return
         }
-        val target = if (regionMode) cropToRegion(bmp) else bmp
-        showResult("กำลังอ่านข้อความ…")
+        val target = cropToRegion(bmp)
+        showResult("กำลังอ่าน…")
         try {
             val input = InputImage.fromBitmap(target, 0)
             recognizer.process(input)
@@ -355,12 +400,10 @@ class OverlayService : Service() {
     }
 
     private fun cropToRegion(src: Bitmap): Bitmap {
-        val lp = regionLp ?: return src
-        val border = dp(3)
-        val x = (lp.x + border).coerceIn(0, sw - 1)
-        val y = (lp.y + border).coerceIn(0, sh - 1)
-        val w = (lp.width - border * 2).coerceIn(1, sw - x)
-        val h = (lp.height - border * 2).coerceIn(1, sh - y)
+        val x = (fx * sw).toInt().coerceIn(0, sw - 1)
+        val y = (fy * sh).toInt().coerceIn(0, sh - 1)
+        val w = (fw * sw).toInt().coerceIn(1, sw - x)
+        val h = (fh * sh).toInt().coerceIn(1, sh - y)
         return try { Bitmap.createBitmap(src, x, y, w, h) } catch (e: Exception) { src }
     }
 
@@ -405,31 +448,45 @@ class OverlayService : Service() {
     private fun showResult(msg: String) {
         main.post {
             try {
+                val rx = (fx * sw).toInt().coerceIn(0, (sw - dp(120)).coerceAtLeast(0))
+                val ry = (fy * sh).toInt().coerceIn(0, (sh - dp(60)).coerceAtLeast(0))
+                val rw = (fw * sw).toInt().coerceAtLeast(dp(160))
                 if (resultView == null) {
                     val tv = TextView(this).apply {
-                        setTextColor(Color.WHITE)
+                        setTextColor(Color.parseColor("#15151F"))
                         textSize = 18f
-                        background = pill("#DD000000")
+                        setTypeface(typeface, android.graphics.Typeface.BOLD)
+                        background = GradientDrawable().apply {
+                            setColor(Color.WHITE)                     // ขาวล้วน ทึบ
+                            cornerRadius = dp(18).toFloat()
+                            setStroke(dp(2), Color.parseColor("#667EEA"))
+                        }
                         setPadding(dp(18), dp(14), dp(18), dp(14))
-                        setOnClickListener { removeResult() }
+                        setOnClickListener { removeResult() }          // แตะเพื่อปิด
                     }
                     val lp = WindowManager.LayoutParams(
-                        sw - dp(24),
+                        rw,
                         WindowManager.LayoutParams.WRAP_CONTENT,
                         overlayType(),
                         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                         PixelFormat.TRANSLUCENT
                     ).apply {
-                        gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
-                        y = dp(60)
+                        gravity = Gravity.TOP or Gravity.START
+                        x = rx; y = ry
                     }
                     windowManager.addView(tv, lp)
                     resultView = tv
+                    resultLp = lp
+                } else {
+                    resultLp?.let {
+                        it.x = rx; it.y = ry; it.width = rw
+                        runCatching { windowManager.updateViewLayout(resultView, it) }
+                    }
                 }
                 resultView?.text = msg
-                // หายเองใน ~7 วิ (แตะปิดเองได้)
+                // เผื่อลืมแตะปิด → หายเองใน ~10 วิ
                 main.removeCallbacks(dismissRunnable)
-                main.postDelayed(dismissRunnable, 7000)
+                main.postDelayed(dismissRunnable, 10000)
             } catch (_: Exception) {}
         }
     }
@@ -438,6 +495,7 @@ class OverlayService : Service() {
         main.removeCallbacks(dismissRunnable)
         resultView?.let { runCatching { windowManager.removeView(it) } }
         resultView = null
+        resultLp = null
     }
 
     // ---------------- helpers ----------------
