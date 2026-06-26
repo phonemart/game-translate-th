@@ -1,0 +1,89 @@
+package com.thunder.gametranslate
+
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import java.util.concurrent.TimeUnit
+
+/**
+ * Calls Google Gemini (Generative Language REST API) to translate game text
+ * into natural Thai. Runs on a background thread (call from a coroutine).
+ */
+object GeminiClient {
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(40, TimeUnit.SECONDS)
+        .build()
+
+    private val JSON = "application/json; charset=utf-8".toMediaType()
+
+    /**
+     * @return translated Thai text, or a string beginning with "ERROR:" on failure.
+     */
+    fun translate(apiKey: String, model: String, sourceText: String): String {
+        if (apiKey.isBlank()) return "ERROR: ยังไม่ได้ใส่ Gemini API Key"
+        if (sourceText.isBlank()) return "ERROR: ไม่พบข้อความบนหน้าจอ"
+
+        val prompt = """
+            คุณเป็นนักแปลเกมมืออาชีพ แปลข้อความต่อไปนี้ที่ดึงมาจากหน้าจอเกมให้เป็นภาษาไทย
+            โดยแปลแบบเป็นธรรมชาติ ลื่นไหล เข้าใจบริบท เหมือนบทพากย์/คำบรรยายในเกมจริง
+            ห้ามอธิบายเพิ่ม ตอบกลับมาเฉพาะคำแปลภาษาไทยเท่านั้น
+
+            ข้อความ:
+            $sourceText
+        """.trimIndent()
+
+        val body = JSONObject().apply {
+            put("contents", org.json.JSONArray().put(
+                JSONObject().put("parts", org.json.JSONArray().put(
+                    JSONObject().put("text", prompt)
+                ))
+            ))
+            put("generationConfig", JSONObject().put("temperature", 0.3))
+        }.toString()
+
+        val url = "https://generativelanguage.googleapis.com/v1beta/models/" +
+                model.trim() + ":generateContent?key=" + apiKey.trim()
+
+        val request = Request.Builder()
+            .url(url)
+            .post(body.toRequestBody(JSON))
+            .build()
+
+        return try {
+            client.newCall(request).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    val msg = runCatching {
+                        JSONObject(text).getJSONObject("error").getString("message")
+                    }.getOrDefault(text.take(200))
+                    return "ERROR: (${resp.code}) $msg"
+                }
+                parseTranslation(text)
+            }
+        } catch (e: Exception) {
+            "ERROR: ${e.message}"
+        }
+    }
+
+    private fun parseTranslation(json: String): String {
+        return try {
+            val candidates = JSONObject(json).optJSONArray("candidates")
+                ?: return "ERROR: ไม่มีผลลัพธ์จาก Gemini"
+            if (candidates.length() == 0) return "ERROR: Gemini ไม่ส่งคำแปลกลับมา"
+            val parts = candidates.getJSONObject(0)
+                .getJSONObject("content")
+                .getJSONArray("parts")
+            val sb = StringBuilder()
+            for (i in 0 until parts.length()) {
+                sb.append(parts.getJSONObject(i).optString("text"))
+            }
+            sb.toString().trim().ifBlank { "ERROR: คำแปลว่างเปล่า" }
+        } catch (e: Exception) {
+            "ERROR: อ่านผลลัพธ์ไม่ได้ (${e.message})"
+        }
+    }
+}
