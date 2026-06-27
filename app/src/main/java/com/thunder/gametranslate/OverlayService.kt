@@ -586,6 +586,18 @@ class OverlayService : Service() {
             return
         }
 
+        // ---- เอนจิน Groq / DeepSeek (OpenAI-compatible) ----
+        if (engine == "groq") {
+            aiTranslate(MainActivity.GROQ_URL, prefs.getString(MainActivity.KEY_GROQ, "").orEmpty(),
+                MainActivity.GROQ_MODEL, text, game, cacheKey)
+            return
+        }
+        if (engine == "deepseek") {
+            aiTranslate(MainActivity.DEEPSEEK_URL, prefs.getString(MainActivity.KEY_DEEPSEEK, "").orEmpty(),
+                MainActivity.DEEPSEEK_MODEL, text, game, cacheKey)
+            return
+        }
+
         // ---- เอนจิน Gemini AI ----
         val key = prefs.getString(MainActivity.KEY_API, "").orEmpty()
         val model = prefs.getString(MainActivity.KEY_MODEL, MainActivity.DEFAULT_MODEL)
@@ -613,6 +625,23 @@ class OverlayService : Service() {
                     showResult("⚠️ โควต้าฟรีเต็มทุกรุ่นแล้ววันนี้ — ลองพรุ่งนี้ หรือเปิด billing")
                 out.startsWith("ERROR") ->
                     showResult("⚠️ ${out.removePrefix("ERROR: ")}")
+                else -> {
+                    synchronized(cache) { cache[cacheKey] = out }
+                    showResult(out); speak(out)
+                }
+            }
+            busy = false
+        }
+    }
+
+    /** แปลผ่าน API แบบ OpenAI-compatible (Groq / DeepSeek) */
+    private fun aiTranslate(url: String, key: String, model: String, text: String, game: String, cacheKey: String) {
+        showResult("กำลังแปล…")
+        scope.launch {
+            val out = withContext(Dispatchers.IO) { OpenAIClient.translate(url, key, model, text, game) }
+            when {
+                out.startsWith("QUOTA:") -> showResult("⚠️ โควต้าเต็ม ลองใหม่ภายหลัง หรือสลับเอนจิน")
+                out.startsWith("ERROR") -> showResult("⚠️ ${out.removePrefix("ERROR: ")}")
                 else -> {
                     synchronized(cache) { cache[cacheKey] = out }
                     showResult(out); speak(out)

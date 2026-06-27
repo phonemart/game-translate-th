@@ -32,6 +32,8 @@ class MainActivity : Activity() {
 
     private lateinit var prefs: SharedPreferences
     private lateinit var keyInput: EditText
+    private lateinit var groqInput: EditText
+    private lateinit var deepseekInput: EditText
     private lateinit var modelInput: EditText
     private lateinit var gameInput: EditText
     private lateinit var fallbackCheck: CheckBox
@@ -53,6 +55,12 @@ class MainActivity : Activity() {
         const val KEY_FONT = "font"
         const val KEY_FALLBACK = "fallback"
         const val KEY_ENGINE = "engine"
+        const val KEY_GROQ = "groq_key"
+        const val KEY_DEEPSEEK = "deepseek_key"
+        const val GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+        const val GROQ_MODEL = "llama-3.3-70b-versatile"
+        const val DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
+        const val DEEPSEEK_MODEL = "deepseek-chat"
         const val KEY_PANEL_THEME = "panel_theme"
         const val KEY_PANEL_ALPHA = "panel_alpha"
         const val KEY_TTS = "tts"
@@ -82,6 +90,8 @@ class MainActivity : Activity() {
         val FONTS = listOf("เล็ก" to 16, "กลาง" to 18, "ใหญ่" to 22, "ใหญ่มาก" to 26)
         val ENGINES = listOf(
             "🤖 Gemini AI (เข้าใจบริบทดีสุด)" to "gemini",
+            "⚡ Groq / Llama (เร็วมาก ฟรี)" to "groq",
+            "🐳 DeepSeek (ถูก คุณภาพดี)" to "deepseek",
             "📴 ออฟไลน์ ML Kit (ฟรี ไม่ต้องใช้ key)" to "offline"
         )
         // ธีมกล่องคำแปล: ป้าย, สีพื้น, สีตัวอักษร
@@ -127,17 +137,36 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor("#6B7280"))
         })
 
-        // ---- card: API key ----
-        card(root, "🔑 Gemini API Key") { c ->
+        // ---- card: API keys ----
+        card(root, "🔑 API Keys") { c ->
+            c.addView(hint("ใส่เฉพาะ key ของเอนจินที่จะใช้ (เลือกเอนจินด้านล่าง)"))
+
+            c.addView(label2("🤖 Gemini"))
             keyInput = EditText(this).apply {
                 inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
-                hint = "วาง API Key ที่นี่"
+                hint = "AIza..."
                 setText(prefs.getString(KEY_API, ""))
             }
             c.addView(keyInput)
-            c.addView(accentButton("🌐 ขอ API Key ฟรี (เปิดเว็บ)", "#34A853") {
-                openUrl("https://aistudio.google.com/apikey")
-            })
+            c.addView(linkText("→ ขอฟรีที่ aistudio.google.com/apikey") { openUrl("https://aistudio.google.com/apikey") })
+
+            c.addView(label2("⚡ Groq"))
+            groqInput = EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                hint = "gsk_..."
+                setText(prefs.getString(KEY_GROQ, ""))
+            }
+            c.addView(groqInput)
+            c.addView(linkText("→ ขอฟรีที่ console.groq.com/keys") { openUrl("https://console.groq.com/keys") })
+
+            c.addView(label2("🐳 DeepSeek"))
+            deepseekInput = EditText(this).apply {
+                inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+                hint = "sk-..."
+                setText(prefs.getString(KEY_DEEPSEEK, ""))
+            }
+            c.addView(deepseekInput)
+            c.addView(linkText("→ ขอที่ platform.deepseek.com/api_keys") { openUrl("https://platform.deepseek.com/api_keys") })
         }
 
         // ---- card: game ----
@@ -317,6 +346,20 @@ class MainActivity : Activity() {
         setTextColor(Color.parseColor("#9CA3AF")); setPadding(0, 0, 0, dp(4))
     }
 
+    private fun label2(t: String) = TextView(this).apply {
+        text = t; textSize = 13f
+        setTextColor(Color.parseColor("#15151F"))
+        setTypeface(typeface, android.graphics.Typeface.BOLD)
+        setPadding(0, dp(10), 0, dp(2))
+    }
+
+    private fun linkText(t: String, onClick: () -> Unit) = TextView(this).apply {
+        text = t; textSize = 12f
+        setTextColor(Color.parseColor(ACCENT))
+        setPadding(0, dp(3), 0, dp(2))
+        setOnClickListener { onClick() }
+    }
+
     private fun accentButton(text: String, colorHex: String, onClick: () -> Unit) = Button(this).apply {
         this.text = text
         setTextColor(Color.WHITE)
@@ -356,6 +399,8 @@ class MainActivity : Activity() {
     private fun saveSettings() {
         prefs.edit()
             .putString(KEY_API, keyInput.text.toString().trim())
+            .putString(KEY_GROQ, groqInput.text.toString().trim())
+            .putString(KEY_DEEPSEEK, deepseekInput.text.toString().trim())
             .putString(KEY_MODEL, modelInput.text.toString().trim().ifBlank { DEFAULT_MODEL })
             .putString(KEY_GAME, gameInput.text.toString().trim())
             .putString(KEY_LANG, langValue)
@@ -373,8 +418,14 @@ class MainActivity : Activity() {
 
     private fun startFlow() {
         saveSettings()
-        if (engineValue == "gemini" && keyInput.text.toString().isBlank()) {
-            toast("ใส่ Gemini API Key ก่อน (หรือเปลี่ยนเอนจินเป็นออฟไลน์)"); return
+        val missingKey = when (engineValue) {
+            "gemini" -> keyInput.text.toString().isBlank()
+            "groq" -> groqInput.text.toString().isBlank()
+            "deepseek" -> deepseekInput.text.toString().isBlank()
+            else -> false
+        }
+        if (missingKey) {
+            toast("ใส่ API Key ของเอนจินที่เลือกก่อน (หรือเปลี่ยนเป็นออฟไลน์)"); return
         }
         if (!Settings.canDrawOverlays(this)) {
             toast("อนุญาต \"แสดงบนแอปอื่น\" แล้วกดเริ่มอีกครั้ง")
