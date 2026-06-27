@@ -74,7 +74,8 @@ object GeminiClient {
                     if (resp.code == 429) {
                         val sec = Regex("retry in ([0-9]+)").find(msg)?.groupValues?.get(1)
                         val wait = if (sec != null) "รออีก ~${sec}s" else "รอสักครู่"
-                        return "ERROR: ⏳ โควต้า Gemini ฟรีเต็มชั่วคราว (จำกัด ~20 ครั้ง/นาที) — $wait แล้วลองใหม่"
+                        // QUOTA: = ตัวเรียกสามารถสลับไปลองโมเดลอื่นได้
+                        return "QUOTA: ⏳ โควต้าเต็ม — $wait"
                     }
                     return "ERROR: (${resp.code}) $msg"
                 }

@@ -34,6 +34,10 @@ import android.widget.TextView
 import android.widget.Toast
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +57,12 @@ class OverlayService : Service() {
     private var resultLp: WindowManager.LayoutParams? = null
     private var regionView: FrameLayout? = null      // กล่อง edit (แสดงเฉพาะตอนจัดกรอบ)
     private var regionToggle: TextView? = null
+    private var autoToggle: TextView? = null
+
+    // โหมดแปลอัตโนมัติ
+    private var autoMode = false
+    private var lastSeenText = ""
+    private var lastTranslatedText = ""
 
     // พื้นที่แปล เก็บเป็นสัดส่วนของจอ (รองรับหมุนจอ) — default = แถบล่างกลางจอ
     private var fx = 0.15f
@@ -63,7 +73,26 @@ class OverlayService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val dismissRunnable = Runnable { removeResult() }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
-    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+
+    // ตัวอ่านข้อความ (OCR) แยกตามภาษา — สร้างเมื่อใช้ครั้งแรก
+    private val recognizers = HashMap<String, TextRecognizer>()
+    private fun getRecognizer(lang: String): TextRecognizer = recognizers.getOrPut(lang) {
+        when (lang) {
+            "ja" -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+            "zh" -> TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
+            "ko" -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+            else -> TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        }
+    }
+
+    // โหมดอัตโนมัติ: วนจับ region ทุก ~1.4 วิ แปลเมื่อข้อความ "นิ่ง" และเปลี่ยนไปจากเดิม
+    private val autoRunnable = object : Runnable {
+        override fun run() {
+            if (!autoMode) return
+            if (!busy) autoTick()
+            main.postDelayed(this, 1400)
+        }
+    }
 
     private var sw = 0
     private var sh = 0
@@ -225,11 +254,14 @@ class OverlayService : Service() {
 
         val handle = chip("≡", "#44FFFFFF")
         val translateBtn = chip("แปล", "#667EEA")
+        autoToggle = chip("⚡ ออโต้", "#33FFFFFF")
         regionToggle = chip("▢ กรอบ", "#33FFFFFF")
 
         container.addView(handle)
         container.addView(space())
         container.addView(translateBtn)
+        container.addView(space())
+        container.addView(autoToggle)
         container.addView(space())
         container.addView(regionToggle)
 
@@ -241,16 +273,66 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = sw - dp(220)
-            y = dp(120)
+            x = (sw - dp(330)).coerceAtLeast(dp(8))
+            y = dp(110)
         }
 
         attachDrag(handle, lp, container) {}
         translateBtn.setOnClickListener { onTranslateClick() }
+        autoToggle?.setOnClickListener { toggleAuto() }
         regionToggle?.setOnClickListener { toggleEdit() }
 
         runCatching { windowManager.addView(container, lp) }
         bar = container
+    }
+
+    // ---------------- โหมดอัตโนมัติ ----------------
+
+    private fun toggleAuto() {
+        autoMode = !autoMode
+        if (autoMode) {
+            autoToggle?.text = "⚡ ออโต้"
+            autoToggle?.background = pill("#4CAF50")
+            lastSeenText = ""; lastTranslatedText = ""
+            removeResult()   // เปลี่ยนตำแหน่งกล่องคำแปล (ออโต้ = เหนือกรอบ)
+            toast("โหมดอัตโนมัติ: เปิด — เจอบทพูดใหม่จะแปลเองทันที")
+            main.postDelayed(autoRunnable, 600)
+        } else {
+            autoToggle?.text = "⚡ ออโต้"
+            autoToggle?.background = pill("#33FFFFFF")
+            main.removeCallbacks(autoRunnable)
+            toast("โหมดอัตโนมัติ: ปิด")
+        }
+    }
+
+    private fun autoTick() {
+        val bmp = try { grabBitmap() } catch (e: Exception) { null } ?: return
+        val target = cropToRegion(bmp)
+        val lang = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+            .getString(MainActivity.KEY_LANG, "latin").orEmpty().ifBlank { "latin" }
+        try {
+            getRecognizer(lang).process(InputImage.fromBitmap(target, 0))
+                .addOnSuccessListener { vt ->
+                    runCatching { if (target != bmp) target.recycle() }
+                    runCatching { bmp.recycle() }
+                    val text = vt.text.replace("\n", " ").trim()
+                    if (text.isBlank()) { lastSeenText = ""; return@addOnSuccessListener }
+                    // แปลเมื่อข้อความ "นิ่ง" (เท่าเดิม 1 รอบ — กัน typewriter) และต่างจากที่แปลล่าสุด
+                    if (text == lastSeenText && text != lastTranslatedText) {
+                        lastTranslatedText = text
+                        busy = true
+                        translate(text)
+                    }
+                    lastSeenText = text
+                }
+                .addOnFailureListener {
+                    runCatching { if (target != bmp) target.recycle() }
+                    runCatching { bmp.recycle() }
+                }
+        } catch (e: Exception) {
+            runCatching { if (target != bmp) target.recycle() }
+            runCatching { bmp.recycle() }
+        }
     }
 
     // ---------------- ตั้งกรอบ (edit mode) ----------------
@@ -384,9 +466,11 @@ class OverlayService : Service() {
         }
         val target = cropToRegion(bmp)
         showResult("กำลังอ่าน…")
+        val lang = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+            .getString(MainActivity.KEY_LANG, "latin").orEmpty().ifBlank { "latin" }
         try {
             val input = InputImage.fromBitmap(target, 0)
-            recognizer.process(input)
+            getRecognizer(lang).process(input)
                 .addOnSuccessListener { vt ->
                     val text = vt.text.replace("\n", " ").trim()
                     runCatching { if (target != bmp) target.recycle() }
@@ -418,20 +502,42 @@ class OverlayService : Service() {
         val model = prefs.getString(MainActivity.KEY_MODEL, MainActivity.DEFAULT_MODEL)
             .orEmpty().ifBlank { MainActivity.DEFAULT_MODEL }
         val game = prefs.getString(MainActivity.KEY_GAME, "").orEmpty()
+        val fallback = prefs.getBoolean(MainActivity.KEY_FALLBACK, true)
 
-        // แคช: ข้อความเดิม (+เกม+โมเดล) → คืนทันที ไม่ยิง API
-        val cacheKey = "$model|$game|$text"
+        // แคช: ข้อความเดิม (+เกม) → คืนทันที ไม่ยิง API
+        val cacheKey = "$game|$text"
         synchronized(cache) { cache[cacheKey] }?.let { cached ->
             showResult(cached)
             busy = false
             return
         }
 
+        // ลำดับโมเดล: ตัวที่เลือก → ตามด้วยตัวสำรอง (ถ้าเปิดสลับอัตโนมัติ)
+        val order = mutableListOf(model)
+        if (fallback) {
+            for (m in MainActivity.FALLBACK_MODELS) if (m != model) order.add(m)
+        }
+
         showResult("กำลังแปล…")
         scope.launch {
-            val out = withContext(Dispatchers.IO) { GeminiClient.translate(key, model, text, game) }
-            if (!out.startsWith("ERROR")) synchronized(cache) { cache[cacheKey] = out }
-            showResult(if (out.startsWith("ERROR")) "⚠️ ${out.removePrefix("ERROR: ")}" else out)
+            var out = "QUOTA:"
+            var usedModel = model
+            for ((i, m) in order.withIndex()) {
+                if (i > 0) showResult("โควต้าเต็ม… สลับเป็น $m")
+                out = withContext(Dispatchers.IO) { GeminiClient.translate(key, m, text, game) }
+                usedModel = m
+                if (!out.startsWith("QUOTA:")) break   // สำเร็จ หรือ error อื่น → หยุด
+            }
+            when {
+                out.startsWith("QUOTA:") ->
+                    showResult("⚠️ โควต้าฟรีเต็มทุกรุ่นแล้ววันนี้ — ลองพรุ่งนี้ หรือเปิด billing")
+                out.startsWith("ERROR") ->
+                    showResult("⚠️ ${out.removePrefix("ERROR: ")}")
+                else -> {
+                    synchronized(cache) { cache[cacheKey] = out }
+                    showResult(out)
+                }
+            }
             busy = false
         }
     }
@@ -463,13 +569,14 @@ class OverlayService : Service() {
     private fun showResult(msg: String) {
         main.post {
             try {
+                val fontSize = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+                    .getInt(MainActivity.KEY_FONT, 18).coerceIn(12, 34).toFloat()
                 val rx = (fx * sw).toInt().coerceIn(0, (sw - dp(120)).coerceAtLeast(0))
-                val ry = (fy * sh).toInt().coerceIn(0, (sh - dp(60)).coerceAtLeast(0))
+                val rTop = (fy * sh).toInt().coerceIn(0, (sh - dp(60)).coerceAtLeast(0))
                 val rw = (fw * sw).toInt().coerceAtLeast(dp(160))
                 if (resultView == null) {
                     val tv = TextView(this).apply {
                         setTextColor(Color.parseColor("#15151F"))
-                        textSize = 18f
                         setTypeface(typeface, android.graphics.Typeface.BOLD)
                         background = GradientDrawable().apply {
                             setColor(Color.WHITE)                     // ขาวล้วน ทึบ
@@ -485,23 +592,31 @@ class OverlayService : Service() {
                         overlayType(),
                         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
                         PixelFormat.TRANSLUCENT
-                    ).apply {
-                        gravity = Gravity.TOP or Gravity.START
-                        x = rx; y = ry
-                    }
+                    )
                     windowManager.addView(tv, lp)
                     resultView = tv
                     resultLp = lp
-                } else {
-                    resultLp?.let {
-                        it.x = rx; it.y = ry; it.width = rw
-                        runCatching { windowManager.updateViewLayout(resultView, it) }
+                }
+                resultView?.textSize = fontSize
+                resultLp?.let {
+                    it.width = rw
+                    if (autoMode) {
+                        // ออโต้: วางกล่อง "เหนือกรอบ" เพื่อไม่บังพื้นที่ที่ต้องอ่านซ้ำ
+                        it.gravity = Gravity.BOTTOM or Gravity.START
+                        it.x = rx
+                        it.y = (sh - rTop + dp(8)).coerceAtLeast(dp(8))
+                    } else {
+                        // แมนนวล: วางทับกรอบ
+                        it.gravity = Gravity.TOP or Gravity.START
+                        it.x = rx
+                        it.y = rTop
                     }
+                    runCatching { windowManager.updateViewLayout(resultView, it) }
                 }
                 resultView?.text = msg
-                // เผื่อลืมแตะปิด → หายเองใน ~10 วิ
+                // แมนนวลหายเองใน ~10 วิ / ออโต้คงไว้จนเจอบทใหม่ (แตะปิดได้เสมอ)
                 main.removeCallbacks(dismissRunnable)
-                main.postDelayed(dismissRunnable, 10000)
+                if (!autoMode) main.postDelayed(dismissRunnable, 10000)
             } catch (_: Exception) {}
         }
     }
@@ -581,6 +696,10 @@ class OverlayService : Service() {
     }
 
     private fun cleanup() {
+        autoMode = false
+        main.removeCallbacks(autoRunnable)
+        recognizers.values.forEach { runCatching { it.close() } }
+        recognizers.clear()
         runCatching { virtualDisplay?.release() }
         runCatching { imageReader?.setOnImageAvailableListener(null, null) }
         runCatching { imageReader?.close() }
