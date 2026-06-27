@@ -562,12 +562,15 @@ class OverlayService : Service() {
         val engine = prefs.getString(MainActivity.KEY_ENGINE, "gemini").orEmpty().ifBlank { "gemini" }
         val game = prefs.getString(MainActivity.KEY_GAME, "").orEmpty()
         val lang = prefs.getString(MainActivity.KEY_LANG, "latin").orEmpty().ifBlank { "latin" }
+        val memoryOn = prefs.getBoolean(MainActivity.KEY_MEMORY, true)
+        val historyText = if (memoryOn) buildHistoryText() else ""
 
         // แคช: เอนจิน+เกม+ข้อความ → คืนทันที
         val cacheKey = "$engine|$game|$text"
         synchronized(cache) { cache[cacheKey] }?.let { cached ->
             showResult(cached)
             speak(cached)
+            recordHistory(text, cached)
             busy = false
             return
         }
@@ -579,7 +582,7 @@ class OverlayService : Service() {
                 val out = withContext(Dispatchers.IO) { OfflineTranslator.translateBlocking(lang, text) }
                 if (!out.startsWith("ERROR")) {
                     synchronized(cache) { cache[cacheKey] = out }
-                    showResult(out); speak(out)
+                    showResult(out); speak(out); recordHistory(text, out)
                 } else showResult("⚠️ ${out.removePrefix("ERROR: ")}")
                 busy = false
             }
@@ -589,12 +592,12 @@ class OverlayService : Service() {
         // ---- เอนจิน Groq / DeepSeek (OpenAI-compatible) ----
         if (engine == "groq") {
             aiTranslate(MainActivity.GROQ_URL, prefs.getString(MainActivity.KEY_GROQ, "").orEmpty(),
-                MainActivity.GROQ_MODEL, text, game, cacheKey)
+                MainActivity.GROQ_MODEL, text, game, historyText, cacheKey)
             return
         }
         if (engine == "deepseek") {
             aiTranslate(MainActivity.DEEPSEEK_URL, prefs.getString(MainActivity.KEY_DEEPSEEK, "").orEmpty(),
-                MainActivity.DEEPSEEK_MODEL, text, game, cacheKey)
+                MainActivity.DEEPSEEK_MODEL, text, game, historyText, cacheKey)
             return
         }
 
@@ -616,7 +619,7 @@ class OverlayService : Service() {
             var usedModel = model
             for ((i, m) in order.withIndex()) {
                 if (i > 0) showResult("โควต้าเต็ม… สลับเป็น $m")
-                out = withContext(Dispatchers.IO) { GeminiClient.translate(key, m, text, game) }
+                out = withContext(Dispatchers.IO) { GeminiClient.translate(key, m, text, game, historyText) }
                 usedModel = m
                 if (!out.startsWith("QUOTA:")) break   // สำเร็จ หรือ error อื่น → หยุด
             }
@@ -627,7 +630,7 @@ class OverlayService : Service() {
                     showResult("⚠️ ${out.removePrefix("ERROR: ")}")
                 else -> {
                     synchronized(cache) { cache[cacheKey] = out }
-                    showResult(out); speak(out)
+                    showResult(out); speak(out); recordHistory(text, out)
                 }
             }
             busy = false
@@ -635,20 +638,36 @@ class OverlayService : Service() {
     }
 
     /** แปลผ่าน API แบบ OpenAI-compatible (Groq / DeepSeek) */
-    private fun aiTranslate(url: String, key: String, model: String, text: String, game: String, cacheKey: String) {
+    private fun aiTranslate(url: String, key: String, model: String, text: String, game: String, history: String, cacheKey: String) {
         showResult("กำลังแปล…")
         scope.launch {
-            val out = withContext(Dispatchers.IO) { OpenAIClient.translate(url, key, model, text, game) }
+            val out = withContext(Dispatchers.IO) { OpenAIClient.translate(url, key, model, text, game, history) }
             when {
                 out.startsWith("QUOTA:") -> showResult("⚠️ โควต้าเต็ม ลองใหม่ภายหลัง หรือสลับเอนจิน")
                 out.startsWith("ERROR") -> showResult("⚠️ ${out.removePrefix("ERROR: ")}")
                 else -> {
                     synchronized(cache) { cache[cacheKey] = out }
-                    showResult(out); speak(out)
+                    showResult(out); speak(out); recordHistory(text, out)
                 }
             }
             busy = false
         }
+    }
+
+    // ---------------- จำบทสนทนา ----------------
+
+    private val historyLines = ArrayDeque<Pair<String, String>>()
+
+    private fun buildHistoryText(): String {
+        if (historyLines.isEmpty()) return ""
+        return historyLines.joinToString("\n") { "- ${it.first} → ${it.second}" }
+    }
+
+    private fun recordHistory(src: String, thai: String) {
+        if (src.isBlank() || thai.isBlank()) return
+        if (historyLines.lastOrNull()?.first == src) return
+        historyLines.addLast(src to thai)
+        while (historyLines.size > 3) historyLines.removeFirst()
     }
 
     private fun grabBitmap(): Bitmap? {

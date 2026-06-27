@@ -45,6 +45,7 @@ class MainActivity : Activity() {
     private var panelAlphaValue = 100
     private var ttsRateValue = 100
     private lateinit var ttsCheck: CheckBox
+    private lateinit var memoryCheck: CheckBox
 
     companion object {
         const val PREFS = "gt_prefs"
@@ -65,6 +66,7 @@ class MainActivity : Activity() {
         const val KEY_PANEL_ALPHA = "panel_alpha"
         const val KEY_TTS = "tts"
         const val KEY_TTS_RATE = "tts_rate"
+        const val KEY_MEMORY = "memory"
         const val DEFAULT_MODEL = "gemini-2.5-flash-lite"
         private const val REQ_PROJECTION = 1001
         private const val REQ_OVERLAY = 1002
@@ -203,6 +205,12 @@ class MainActivity : Activity() {
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
             c.addView(sp)
+            memoryCheck = CheckBox(this).apply {
+                text = "จำบทสนทนา — ส่งบทพูดก่อนหน้าให้ AI เข้าใจเนื้อเรื่องต่อเนื่อง (ใช้โควต้าเพิ่มเล็กน้อย, ไม่มีผลกับออฟไลน์)"
+                isChecked = prefs.getBoolean(KEY_MEMORY, true)
+                setPadding(0, dp(8), 0, 0)
+            }
+            c.addView(memoryCheck)
         }
 
         // ---- card: model ----
@@ -411,6 +419,7 @@ class MainActivity : Activity() {
             .putInt(KEY_PANEL_ALPHA, panelAlphaValue)
             .putBoolean(KEY_TTS, ttsCheck.isChecked)
             .putInt(KEY_TTS_RATE, ttsRateValue)
+            .putBoolean(KEY_MEMORY, memoryCheck.isChecked)
             .apply()
     }
 
