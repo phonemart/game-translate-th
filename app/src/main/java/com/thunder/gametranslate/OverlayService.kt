@@ -498,19 +498,35 @@ class OverlayService : Service() {
 
     private fun translate(text: String) {
         val prefs = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
-        val key = prefs.getString(MainActivity.KEY_API, "").orEmpty()
-        val model = prefs.getString(MainActivity.KEY_MODEL, MainActivity.DEFAULT_MODEL)
-            .orEmpty().ifBlank { MainActivity.DEFAULT_MODEL }
+        val engine = prefs.getString(MainActivity.KEY_ENGINE, "gemini").orEmpty().ifBlank { "gemini" }
         val game = prefs.getString(MainActivity.KEY_GAME, "").orEmpty()
-        val fallback = prefs.getBoolean(MainActivity.KEY_FALLBACK, true)
+        val lang = prefs.getString(MainActivity.KEY_LANG, "latin").orEmpty().ifBlank { "latin" }
 
-        // แคช: ข้อความเดิม (+เกม) → คืนทันที ไม่ยิง API
-        val cacheKey = "$game|$text"
+        // แคช: เอนจิน+เกม+ข้อความ → คืนทันที
+        val cacheKey = "$engine|$game|$text"
         synchronized(cache) { cache[cacheKey] }?.let { cached ->
             showResult(cached)
             busy = false
             return
         }
+
+        // ---- เอนจินออฟไลน์ (ML Kit) ----
+        if (engine == "offline") {
+            showResult("กำลังแปล (ออฟไลน์)… ครั้งแรกอาจโหลดโมเดลสักครู่")
+            scope.launch {
+                val out = withContext(Dispatchers.IO) { OfflineTranslator.translateBlocking(lang, text) }
+                if (!out.startsWith("ERROR")) synchronized(cache) { cache[cacheKey] = out }
+                showResult(if (out.startsWith("ERROR")) "⚠️ ${out.removePrefix("ERROR: ")}" else out)
+                busy = false
+            }
+            return
+        }
+
+        // ---- เอนจิน Gemini AI ----
+        val key = prefs.getString(MainActivity.KEY_API, "").orEmpty()
+        val model = prefs.getString(MainActivity.KEY_MODEL, MainActivity.DEFAULT_MODEL)
+            .orEmpty().ifBlank { MainActivity.DEFAULT_MODEL }
+        val fallback = prefs.getBoolean(MainActivity.KEY_FALLBACK, true)
 
         // ลำดับโมเดล: ตัวที่เลือก → ตามด้วยตัวสำรอง (ถ้าเปิดสลับอัตโนมัติ)
         val order = mutableListOf(model)
@@ -700,6 +716,7 @@ class OverlayService : Service() {
         main.removeCallbacks(autoRunnable)
         recognizers.values.forEach { runCatching { it.close() } }
         recognizers.clear()
+        runCatching { OfflineTranslator.close() }
         runCatching { virtualDisplay?.release() }
         runCatching { imageReader?.setOnImageAvailableListener(null, null) }
         runCatching { imageReader?.close() }

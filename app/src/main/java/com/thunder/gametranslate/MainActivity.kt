@@ -38,6 +38,7 @@ class MainActivity : Activity() {
     private lateinit var statusView: TextView
     private var langValue = "latin"
     private var fontValue = 18
+    private var engineValue = "gemini"
 
     companion object {
         const val PREFS = "gt_prefs"
@@ -47,6 +48,7 @@ class MainActivity : Activity() {
         const val KEY_LANG = "lang"
         const val KEY_FONT = "font"
         const val KEY_FALLBACK = "fallback"
+        const val KEY_ENGINE = "engine"
         const val DEFAULT_MODEL = "gemini-2.5-flash-lite"
         private const val REQ_PROJECTION = 1001
         private const val REQ_OVERLAY = 1002
@@ -70,6 +72,10 @@ class MainActivity : Activity() {
             "เกาหลี (한국어)" to "ko"
         )
         val FONTS = listOf("เล็ก" to 16, "กลาง" to 18, "ใหญ่" to 22, "ใหญ่มาก" to 26)
+        val ENGINES = listOf(
+            "🤖 Gemini AI (เข้าใจบริบทดีสุด)" to "gemini",
+            "📴 ออฟไลน์ ML Kit (ฟรี ไม่ต้องใช้ key)" to "offline"
+        )
         const val ACCENT = "#667EEA"
     }
 
@@ -78,6 +84,7 @@ class MainActivity : Activity() {
         prefs = getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         langValue = prefs.getString(KEY_LANG, "latin").orEmpty().ifBlank { "latin" }
         fontValue = prefs.getInt(KEY_FONT, 18)
+        engineValue = prefs.getString(KEY_ENGINE, "gemini").orEmpty().ifBlank { "gemini" }
 
         val scroll = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#EEF0F6")) }
         val root = LinearLayout(this).apply {
@@ -135,8 +142,21 @@ class MainActivity : Activity() {
             c.addView(sp)
         }
 
+        // ---- card: engine ----
+        card(root, "⚙️ เอนจินแปล") { c ->
+            c.addView(hint("Gemini = เข้าใจบริบทเกมดีสุด (ต้องมี key) | ออฟไลน์ = ฟรี ไม่มีลิมิต แปลตรงตัวกว่า"))
+            val sp = Spinner(this)
+            sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, ENGINES.map { it.first })
+            sp.setSelection(ENGINES.indexOfFirst { it.second == engineValue }.coerceAtLeast(0))
+            sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { engineValue = ENGINES[pos].second }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+            c.addView(sp)
+        }
+
         // ---- card: model ----
-        card(root, "🤖 โมเดล Gemini") { c ->
+        card(root, "🤖 โมเดล Gemini (ใช้ตอนเลือกเอนจิน Gemini)") { c ->
             val savedModel = prefs.getString(KEY_MODEL, DEFAULT_MODEL).orEmpty().ifBlank { DEFAULT_MODEL }
             val sp = Spinner(this)
             sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, MODELS)
@@ -280,6 +300,7 @@ class MainActivity : Activity() {
             .putString(KEY_LANG, langValue)
             .putInt(KEY_FONT, fontValue)
             .putBoolean(KEY_FALLBACK, fallbackCheck.isChecked)
+            .putString(KEY_ENGINE, engineValue)
             .apply()
     }
 
@@ -287,7 +308,9 @@ class MainActivity : Activity() {
 
     private fun startFlow() {
         saveSettings()
-        if (keyInput.text.toString().isBlank()) { toast("ใส่ Gemini API Key ก่อน"); return }
+        if (engineValue == "gemini" && keyInput.text.toString().isBlank()) {
+            toast("ใส่ Gemini API Key ก่อน (หรือเปลี่ยนเอนจินเป็นออฟไลน์)"); return
+        }
         if (!Settings.canDrawOverlays(this)) {
             toast("อนุญาต \"แสดงบนแอปอื่น\" แล้วกดเริ่มอีกครั้ง")
             startActivityForResult(
