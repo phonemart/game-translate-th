@@ -46,6 +46,8 @@ class MainActivity : Activity() {
     private var ttsRateValue = 100
     private lateinit var ttsCheck: CheckBox
     private lateinit var memoryCheck: CheckBox
+    private lateinit var modelSpinner: Spinner
+    private var modelEngine = "gemini"
 
     companion object {
         const val PREFS = "gt_prefs"
@@ -62,6 +64,17 @@ class MainActivity : Activity() {
         const val GROQ_MODEL = "llama-3.3-70b-versatile"
         const val DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
         const val DEEPSEEK_MODEL = "deepseek-chat"
+        // โมเดลที่เลือกไว้ต่อเอนจิน + รายชื่อโมเดลที่ดึงมา (cache) + endpoint รายชื่อโมเดล
+        const val KEY_MODEL_GROQ = "model_groq"
+        const val KEY_MODEL_DEEPSEEK = "model_deepseek"
+        const val KEY_MODELS_GEMINI = "models_gemini"
+        const val KEY_MODELS_GROQ = "models_groq"
+        const val KEY_MODELS_DEEPSEEK = "models_deepseek"
+        const val GROQ_MODELS_URL = "https://api.groq.com/openai/v1/models"
+        const val DEEPSEEK_MODELS_URL = "https://api.deepseek.com/models"
+        val DEFAULT_MODELS_GEMINI = listOf("gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-flash-latest", "gemini-2.0-flash", "gemini-3-flash-preview")
+        val DEFAULT_MODELS_GROQ = listOf("llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it")
+        val DEFAULT_MODELS_DEEPSEEK = listOf("deepseek-chat", "deepseek-reasoner")
         const val KEY_PANEL_THEME = "panel_theme"
         const val KEY_PANEL_ALPHA = "panel_alpha"
         const val KEY_TTS = "tts"
@@ -237,7 +250,16 @@ class MainActivity : Activity() {
             sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, ENGINES.map { it.first })
             sp.setSelection(ENGINES.indexOfFirst { it.second == engineValue }.coerceAtLeast(0))
             sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { engineValue = ENGINES[pos].second }
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    engineValue = ENGINES[pos].second
+                    if (this@MainActivity::modelInput.isInitialized && engineValue != "offline" && engineValue != modelEngine) {
+                        // บันทึกโมเดลของเอนจินเดิม แล้วโหลดของเอนจินใหม่
+                        prefs.edit().putString(modelKey(modelEngine),
+                            modelInput.text.toString().trim().ifBlank { defaultModel(modelEngine) }).apply()
+                        modelEngine = engineValue
+                        populateModelCard(modelEngine)
+                    }
+                }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
             c.addView(sp)
@@ -250,30 +272,30 @@ class MainActivity : Activity() {
         }
 
         // ---- card: model ----
-        card(root, "🤖 โมเดล Gemini (ใช้ตอนเลือกเอนจิน Gemini)") { c ->
-            val savedModel = prefs.getString(KEY_MODEL, DEFAULT_MODEL).orEmpty().ifBlank { DEFAULT_MODEL }
-            val sp = Spinner(this)
-            sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, MODELS)
-            val idx = MODELS.indexOf(savedModel)
-            sp.setSelection(if (idx >= 0) idx else MODELS.lastIndex)
-            c.addView(sp)
-            modelInput = EditText(this).apply {
-                inputType = InputType.TYPE_CLASS_TEXT
-                setText(savedModel)
-            }
+        card(root, "🤖 โมเดล (ตามเอนจินที่เลือก)") { c ->
+            c.addView(hint("รายชื่อโมเดลของเอนจินที่เลือกด้านบน"))
+            modelSpinner = Spinner(this)
+            c.addView(modelSpinner)
+            modelInput = EditText(this).apply { inputType = InputType.TYPE_CLASS_TEXT }
             c.addView(modelInput)
-            sp.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            modelSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
-                    if (pos < MODELS.lastIndex) modelInput.setText(MODELS[pos])
+                    val count = (modelSpinner.adapter?.count ?: 0)
+                    if (pos < count - 1) modelInput.setText(modelSpinner.getItemAtPosition(pos).toString())
                 }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
+            c.addView(accentButton("🔄 อัปเดตรายชื่อโมเดล (ทุก AI)", "#34A853") { updateModelLists() })
+
             fallbackCheck = CheckBox(this).apply {
-                text = "สลับโมเดลอัตโนมัติเมื่อโควต้าเต็ม (ใช้ฟรีได้นานขึ้น)"
+                text = "สลับโมเดล Gemini อัตโนมัติเมื่อโควต้าเต็ม (ใช้ฟรีได้นานขึ้น)"
                 isChecked = prefs.getBoolean(KEY_FALLBACK, true)
                 setPadding(0, dp(8), 0, 0)
             }
             c.addView(fallbackCheck)
+
+            modelEngine = if (engineValue == "offline") "gemini" else engineValue
+            populateModelCard(modelEngine)
         }
 
         // ---- card: font size ----
@@ -440,6 +462,58 @@ class MainActivity : Activity() {
         try { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } catch (_: Exception) {}
     }
 
+    // ---------------- โมเดลต่อเอนจิน ----------------
+
+    private fun modelKey(engine: String) = when (engine) {
+        "groq" -> KEY_MODEL_GROQ; "deepseek" -> KEY_MODEL_DEEPSEEK; else -> KEY_MODEL
+    }
+    private fun defaultModel(engine: String) = when (engine) {
+        "groq" -> GROQ_MODEL; "deepseek" -> DEEPSEEK_MODEL; else -> DEFAULT_MODEL
+    }
+    private fun defaultModels(engine: String) = when (engine) {
+        "groq" -> DEFAULT_MODELS_GROQ; "deepseek" -> DEFAULT_MODELS_DEEPSEEK; else -> DEFAULT_MODELS_GEMINI
+    }
+    private fun modelsCacheKey(engine: String) = when (engine) {
+        "groq" -> KEY_MODELS_GROQ; "deepseek" -> KEY_MODELS_DEEPSEEK; else -> KEY_MODELS_GEMINI
+    }
+    private fun cachedModels(engine: String): List<String> {
+        val s = prefs.getString(modelsCacheKey(engine), null)
+        return s?.split(",")?.map { it.trim() }?.filter { it.isNotBlank() }?.ifEmpty { null } ?: defaultModels(engine)
+    }
+
+    private fun populateModelCard(engine: String) {
+        val saved = prefs.getString(modelKey(engine), defaultModel(engine)).orEmpty().ifBlank { defaultModel(engine) }
+        val models = cachedModels(engine).toMutableList()
+        if (!models.contains(saved)) models.add(0, saved)
+        models.add("อื่นๆ (พิมพ์เอง)")
+        modelSpinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, models)
+        val idx = models.indexOf(saved)
+        modelSpinner.setSelection(if (idx >= 0) idx else models.lastIndex)
+        modelInput.setText(saved)
+    }
+
+    private fun updateModelLists() {
+        toast("กำลังอัปเดตรายชื่อโมเดล…")
+        val gemKey = keyInput.text.toString().trim()
+        val groqKey = groqInput.text.toString().trim()
+        val dsKey = deepseekInput.text.toString().trim()
+        Thread {
+            val gem = ModelsFetcher.listGemini(gemKey)
+            val groq = ModelsFetcher.listOpenAI(GROQ_MODELS_URL, groqKey)
+            val ds = ModelsFetcher.listOpenAI(DEEPSEEK_MODELS_URL, dsKey)
+            runOnUiThread {
+                val e = prefs.edit()
+                var n = 0
+                if (gem != null) { e.putString(KEY_MODELS_GEMINI, gem.joinToString(",")); n++ }
+                if (groq != null) { e.putString(KEY_MODELS_GROQ, groq.joinToString(",")); n++ }
+                if (ds != null) { e.putString(KEY_MODELS_DEEPSEEK, ds.joinToString(",")); n++ }
+                e.apply()
+                if (modelEngine != "offline") populateModelCard(modelEngine)
+                toast(if (n > 0) "อัปเดตรายชื่อโมเดลแล้ว ($n ผู้ให้บริการ)" else "อัปเดตไม่สำเร็จ — เช็ค key/เน็ต")
+            }
+        }.start()
+    }
+
     // ---------------- settings ----------------
 
     private fun saveSettings() {
@@ -447,7 +521,7 @@ class MainActivity : Activity() {
             .putString(KEY_API, keyInput.text.toString().trim())
             .putString(KEY_GROQ, groqInput.text.toString().trim())
             .putString(KEY_DEEPSEEK, deepseekInput.text.toString().trim())
-            .putString(KEY_MODEL, modelInput.text.toString().trim().ifBlank { DEFAULT_MODEL })
+            .putString(modelKey(modelEngine), modelInput.text.toString().trim().ifBlank { defaultModel(modelEngine) })
             .putString(KEY_GAME, gameInput.text.toString().trim())
             .putString(KEY_LANG, langValue)
             .putInt(KEY_FONT, fontValue)

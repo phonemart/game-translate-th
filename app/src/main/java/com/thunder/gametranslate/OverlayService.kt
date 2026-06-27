@@ -591,13 +591,15 @@ class OverlayService : Service() {
 
         // ---- เอนจิน Groq / DeepSeek (OpenAI-compatible) ----
         if (engine == "groq") {
+            val gm = prefs.getString(MainActivity.KEY_MODEL_GROQ, MainActivity.GROQ_MODEL).orEmpty().ifBlank { MainActivity.GROQ_MODEL }
             aiTranslate(MainActivity.GROQ_URL, prefs.getString(MainActivity.KEY_GROQ, "").orEmpty(),
-                MainActivity.GROQ_MODEL, text, game, historyText, cacheKey)
+                gm, text, game, historyText, cacheKey)
             return
         }
         if (engine == "deepseek") {
+            val dm = prefs.getString(MainActivity.KEY_MODEL_DEEPSEEK, MainActivity.DEEPSEEK_MODEL).orEmpty().ifBlank { MainActivity.DEEPSEEK_MODEL }
             aiTranslate(MainActivity.DEEPSEEK_URL, prefs.getString(MainActivity.KEY_DEEPSEEK, "").orEmpty(),
-                MainActivity.DEEPSEEK_MODEL, text, game, historyText, cacheKey)
+                dm, text, game, historyText, cacheKey)
             return
         }
 
