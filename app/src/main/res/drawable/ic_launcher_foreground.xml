@@ -1,0 +1,21 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- speech bubble (ขาว) + หาง -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M39,34 L69,34 a9,9 0 0 1 9,9 L78,57 a9,9 0 0 1 -9,9 L50,66 L40,75 L41,66 L39,66 a9,9 0 0 1 -9,-9 L30,43 a9,9 0 0 1 9,-9 Z" />
+
+    <!-- ข้อความในกล่อง (ม่วง) -->
+    <path android:fillColor="#FF7A3FB0" android:pathData="M37,42 h34 v4 h-34 z" />
+    <path android:fillColor="#FF7A3FB0" android:pathData="M37,49 h28 v4 h-28 z" />
+    <path android:fillColor="#FF9B7BD4" android:pathData="M37,56 h22 v3.5 h-22 z" />
+
+    <!-- ประกาย AI (เหลือง) -->
+    <path
+        android:fillColor="#FFFFD15A"
+        android:pathData="M77,23 L79,28 L84,30 L79,32 L77,37 L75,32 L70,30 L75,28 Z" />
+</vector>

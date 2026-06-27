@@ -107,7 +107,15 @@ class MainActivity : Activity() {
         val ALPHAS = listOf("ทึบเต็ม" to 100, "โปร่ง 85%" to 85, "โปร่ง 70%" to 70, "โปร่ง 55%" to 55)
         val TTS_RATES = listOf("ช้า" to 80, "ปกติ" to 100, "เร็ว" to 130, "เร็วมาก" to 160)
         const val ACCENT = "#667EEA"
+        const val KEY_DARK = "dark"
     }
+
+    // palette (เปลี่ยนตามโหมดมืด/สว่าง)
+    private var isDark = false
+    private var colBg = 0
+    private var colCard = 0
+    private var colText = 0
+    private var colSub = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -119,24 +127,52 @@ class MainActivity : Activity() {
         panelAlphaValue = prefs.getInt(KEY_PANEL_ALPHA, 100)
         ttsRateValue = prefs.getInt(KEY_TTS_RATE, 100)
 
-        val scroll = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#EEF0F6")) }
-        val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(20), dp(16), dp(28))
+        // ---- ธีม (มืด/สว่าง) ----
+        isDark = prefs.getBoolean(KEY_DARK, false)
+        setTheme(if (isDark) android.R.style.Theme_Material else android.R.style.Theme_Material_Light_DarkActionBar)
+        if (isDark) {
+            colBg = Color.parseColor("#0F1115"); colCard = Color.parseColor("#1B1E26")
+            colText = Color.parseColor("#F3F4F8"); colSub = Color.parseColor("#9AA0AC")
+        } else {
+            colBg = Color.parseColor("#EEF0F6"); colCard = Color.WHITE
+            colText = Color.parseColor("#15151F"); colSub = Color.parseColor("#6B7280")
         }
 
-        // ---- header ----
-        root.addView(TextView(this).apply {
+        val scroll = ScrollView(this).apply { setBackgroundColor(colBg) }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(18), dp(16), dp(28))
+        }
+
+        // ---- header banner (gradient) ----
+        val banner = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                intArrayOf(Color.parseColor("#667EEA"), Color.parseColor("#764BA2"))
+            ).apply { cornerRadius = dp(20).toFloat() }
+            setPadding(dp(20), dp(20), dp(20), dp(20))
+        }
+        banner.addView(TextView(this).apply {
             text = "🎮 GameTranslate TH"
-            textSize = 26f
-            setTextColor(Color.parseColor(ACCENT))
+            textSize = 25f
+            setTextColor(Color.WHITE)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
         })
-        root.addView(TextView(this).apply {
-            text = "แปลข้อความในเกมเป็นไทยด้วย Gemini AI  •  v${BuildConfig.VERSION_NAME}"
+        banner.addView(TextView(this).apply {
+            text = "แปลข้อความในเกมเป็นไทยด้วย AI  •  v${BuildConfig.VERSION_NAME}"
             textSize = 13f
-            setPadding(0, dp(4), 0, dp(16))
-            setTextColor(Color.parseColor("#6B7280"))
+            setPadding(0, dp(4), 0, 0)
+            setTextColor(Color.parseColor("#E8EAFF"))
+        })
+        root.addView(banner, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { bottomMargin = dp(12) })
+
+        // ---- ปุ่มสลับโหมดมืด/สว่าง ----
+        root.addView(plainButton(if (isDark) "☀️ สลับเป็นโหมดสว่าง" else "🌙 สลับเป็นโหมดมืด") {
+            prefs.edit().putBoolean(KEY_DARK, !isDark).apply()
+            recreate()
         })
 
         // ---- card: API keys ----
@@ -319,7 +355,7 @@ class MainActivity : Activity() {
                 5. กด "แปล" = แปล 1 ครั้ง  |  "⚡ ออโต้" = แปลเองทุกบทพูด
             """.trimIndent()
             setPadding(dp(4), dp(18), dp(4), 0)
-            setTextColor(Color.parseColor("#6B7280")); textSize = 13f
+            setTextColor(colSub); textSize = 13f
         })
 
         root.addView(scrollSpacerDummy())
@@ -333,13 +369,14 @@ class MainActivity : Activity() {
         val c = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
-                setColor(Color.WHITE); cornerRadius = dp(16).toFloat()
+                setColor(colCard); cornerRadius = dp(16).toFloat()
+                if (isDark) setStroke(dp(1), Color.parseColor("#2C313C"))
             }
             setPadding(dp(16), dp(14), dp(16), dp(16))
         }
         c.addView(TextView(this).apply {
             text = title; textSize = 15f
-            setTextColor(Color.parseColor("#15151F"))
+            setTextColor(colText)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
             setPadding(0, 0, 0, dp(8))
         })
@@ -351,12 +388,12 @@ class MainActivity : Activity() {
 
     private fun hint(t: String) = TextView(this).apply {
         text = t; textSize = 12f
-        setTextColor(Color.parseColor("#9CA3AF")); setPadding(0, 0, 0, dp(4))
+        setTextColor(colSub); setPadding(0, 0, 0, dp(4))
     }
 
     private fun label2(t: String) = TextView(this).apply {
         text = t; textSize = 13f
-        setTextColor(Color.parseColor("#15151F"))
+        setTextColor(colText)
         setTypeface(typeface, android.graphics.Typeface.BOLD)
         setPadding(0, dp(10), 0, dp(2))
     }
@@ -384,9 +421,10 @@ class MainActivity : Activity() {
     private fun plainButton(text: String, onClick: () -> Unit) = Button(this).apply {
         this.text = text
         isAllCaps = false
-        setTextColor(Color.parseColor("#15151F"))
+        setTextColor(colText)
         background = GradientDrawable().apply {
-            setColor(Color.parseColor("#EEF0F6")); cornerRadius = dp(12).toFloat()
+            setColor(if (isDark) Color.parseColor("#2A2E38") else Color.parseColor("#E7EAF2"))
+            cornerRadius = dp(12).toFloat()
         }
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46))
         lp.topMargin = dp(8)
