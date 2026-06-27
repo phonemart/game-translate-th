@@ -353,13 +353,13 @@ class OverlayService : Service() {
     private fun autoTick() {
         val bmp = try { grabBitmap() } catch (e: Exception) { null } ?: return
         val target = cropToRegion(bmp)
+        val ocrBmp = preprocessForOcr(target)
         val lang = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
             .getString(MainActivity.KEY_LANG, "latin").orEmpty().ifBlank { "latin" }
         try {
-            getRecognizer(lang).process(InputImage.fromBitmap(target, 0))
+            getRecognizer(lang).process(InputImage.fromBitmap(ocrBmp, 0))
                 .addOnSuccessListener { vt ->
-                    runCatching { if (target != bmp) target.recycle() }
-                    runCatching { bmp.recycle() }
+                    recycleBitmaps(bmp, target, ocrBmp)
                     val text = vt.text.replace("\n", " ").trim()
                     if (text.isBlank()) { lastSeenText = ""; return@addOnSuccessListener }
                     // แปลเมื่อข้อความ "นิ่ง" (เท่าเดิม 1 รอบ — กัน typewriter) และต่างจากที่แปลล่าสุด
@@ -370,13 +370,9 @@ class OverlayService : Service() {
                     }
                     lastSeenText = text
                 }
-                .addOnFailureListener {
-                    runCatching { if (target != bmp) target.recycle() }
-                    runCatching { bmp.recycle() }
-                }
+                .addOnFailureListener { recycleBitmaps(bmp, target, ocrBmp) }
         } catch (e: Exception) {
-            runCatching { if (target != bmp) target.recycle() }
-            runCatching { bmp.recycle() }
+            recycleBitmaps(bmp, target, ocrBmp)
         }
     }
 
@@ -510,27 +506,47 @@ class OverlayService : Service() {
             return
         }
         val target = cropToRegion(bmp)
+        val ocrBmp = preprocessForOcr(target)
         showResult("กำลังอ่าน…")
         val lang = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
             .getString(MainActivity.KEY_LANG, "latin").orEmpty().ifBlank { "latin" }
         try {
-            val input = InputImage.fromBitmap(target, 0)
-            getRecognizer(lang).process(input)
+            getRecognizer(lang).process(InputImage.fromBitmap(ocrBmp, 0))
                 .addOnSuccessListener { vt ->
                     val text = vt.text.replace("\n", " ").trim()
-                    runCatching { if (target != bmp) target.recycle() }
-                    runCatching { bmp.recycle() }
+                    recycleBitmaps(bmp, target, ocrBmp)
                     if (text.isBlank()) { showResult("ไม่พบข้อความ (ลองขยับ/ขยายกรอบ)"); busy = false; return@addOnSuccessListener }
                     translate(text)
                 }
                 .addOnFailureListener {
-                    runCatching { if (target != bmp) target.recycle() }
-                    runCatching { bmp.recycle() }
+                    recycleBitmaps(bmp, target, ocrBmp)
                     showResult("อ่านข้อความไม่สำเร็จ"); busy = false
                 }
         } catch (e: Exception) {
+            recycleBitmaps(bmp, target, ocrBmp)
             showResult("ผิดพลาด: ${e.message}"); busy = false
         }
+    }
+
+    /** ขยายภาพในกรอบก่อนส่ง OCR → ฟอนต์ pixel เกมเก่าอ่านแม่นขึ้น (จำกัดขนาดสูงสุดกันหน่วง) */
+    private fun preprocessForOcr(src: Bitmap): Bitmap {
+        if (src.width <= 0 || src.height <= 0) return src
+        val scale = 3.0f
+        val maxDim = 2400
+        var w = (src.width * scale).toInt()
+        var h = (src.height * scale).toInt()
+        val big = maxOf(w, h)
+        if (big > maxDim) { val f = maxDim.toFloat() / big; w = (w * f).toInt(); h = (h * f).toInt() }
+        if (w <= src.width) return src   // เล็กกว่าเดิม/เท่าเดิม ไม่ต้องขยาย
+        return try {
+            Bitmap.createScaledBitmap(src, w.coerceAtLeast(1), h.coerceAtLeast(1), true)
+        } catch (e: Exception) { src }
+    }
+
+    /** รีไซเคิล bitmap ที่ไม่ซ้ำกัน (กันเผลอ recycle ตัวเดียวกัน 2 รอบ) */
+    private fun recycleBitmaps(vararg bs: Bitmap?) {
+        val seen = HashSet<Bitmap>()
+        for (b in bs) if (b != null && seen.add(b)) runCatching { b.recycle() }
     }
 
     private fun cropToRegion(src: Bitmap): Bitmap {
