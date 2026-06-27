@@ -39,6 +39,10 @@ class MainActivity : Activity() {
     private var langValue = "latin"
     private var fontValue = 18
     private var engineValue = "gemini"
+    private var panelThemeValue = 0
+    private var panelAlphaValue = 100
+    private var ttsRateValue = 100
+    private lateinit var ttsCheck: CheckBox
 
     companion object {
         const val PREFS = "gt_prefs"
@@ -49,6 +53,10 @@ class MainActivity : Activity() {
         const val KEY_FONT = "font"
         const val KEY_FALLBACK = "fallback"
         const val KEY_ENGINE = "engine"
+        const val KEY_PANEL_THEME = "panel_theme"
+        const val KEY_PANEL_ALPHA = "panel_alpha"
+        const val KEY_TTS = "tts"
+        const val KEY_TTS_RATE = "tts_rate"
         const val DEFAULT_MODEL = "gemini-2.5-flash-lite"
         private const val REQ_PROJECTION = 1001
         private const val REQ_OVERLAY = 1002
@@ -76,6 +84,16 @@ class MainActivity : Activity() {
             "🤖 Gemini AI (เข้าใจบริบทดีสุด)" to "gemini",
             "📴 ออฟไลน์ ML Kit (ฟรี ไม่ต้องใช้ key)" to "offline"
         )
+        // ธีมกล่องคำแปล: ป้าย, สีพื้น, สีตัวอักษร
+        val PANEL_THEMES = listOf(
+            Triple("ขาว – ตัวดำ", "#FFFFFF", "#15151F"),
+            Triple("ดำ – ตัวขาว", "#15151F", "#FFFFFF"),
+            Triple("น้ำเงินเข้ม – ตัวขาว", "#1A237E", "#FFFFFF"),
+            Triple("เหลือง – ตัวดำ", "#FFF176", "#15151F"),
+            Triple("เขียวเข้ม – ตัวขาว", "#1B5E20", "#FFFFFF")
+        )
+        val ALPHAS = listOf("ทึบเต็ม" to 100, "โปร่ง 85%" to 85, "โปร่ง 70%" to 70, "โปร่ง 55%" to 55)
+        val TTS_RATES = listOf("ช้า" to 80, "ปกติ" to 100, "เร็ว" to 130, "เร็วมาก" to 160)
         const val ACCENT = "#667EEA"
     }
 
@@ -85,6 +103,9 @@ class MainActivity : Activity() {
         langValue = prefs.getString(KEY_LANG, "latin").orEmpty().ifBlank { "latin" }
         fontValue = prefs.getInt(KEY_FONT, 18)
         engineValue = prefs.getString(KEY_ENGINE, "gemini").orEmpty().ifBlank { "gemini" }
+        panelThemeValue = prefs.getInt(KEY_PANEL_THEME, 0)
+        panelAlphaValue = prefs.getInt(KEY_PANEL_ALPHA, 100)
+        ttsRateValue = prefs.getInt(KEY_TTS_RATE, 100)
 
         val scroll = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#EEF0F6")) }
         val root = LinearLayout(this).apply {
@@ -194,6 +215,46 @@ class MainActivity : Activity() {
             c.addView(sp)
         }
 
+        // ---- card: panel customize ----
+        card(root, "🎨 หน้าตากล่องคำแปล") { c ->
+            c.addView(hint("ธีมสี"))
+            val spTheme = Spinner(this)
+            spTheme.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, PANEL_THEMES.map { it.first })
+            spTheme.setSelection(panelThemeValue.coerceIn(0, PANEL_THEMES.lastIndex))
+            spTheme.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { panelThemeValue = pos }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+            c.addView(spTheme)
+            c.addView(hint("ความทึบ"))
+            val spAlpha = Spinner(this)
+            spAlpha.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, ALPHAS.map { it.first })
+            spAlpha.setSelection(ALPHAS.indexOfFirst { it.second == panelAlphaValue }.coerceAtLeast(0))
+            spAlpha.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { panelAlphaValue = ALPHAS[pos].second }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+            c.addView(spAlpha)
+        }
+
+        // ---- card: TTS ----
+        card(root, "🔊 อ่านออกเสียงคำแปล") { c ->
+            ttsCheck = CheckBox(this).apply {
+                text = "อ่านออกเสียงไทยอัตโนมัติเมื่อแปลเสร็จ"
+                isChecked = prefs.getBoolean(KEY_TTS, false)
+            }
+            c.addView(ttsCheck)
+            c.addView(hint("ความเร็วเสียง"))
+            val spRate = Spinner(this)
+            spRate.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, TTS_RATES.map { it.first })
+            spRate.setSelection(TTS_RATES.indexOfFirst { it.second == ttsRateValue }.coerceAtLeast(1))
+            spRate.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { ttsRateValue = TTS_RATES[pos].second }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+            c.addView(spRate)
+        }
+
         root.addView(accentButton("💾 บันทึก", ACCENT) { saveSettings(); toast("บันทึกแล้ว") })
         root.addView(accentButton("▶️ เริ่มแปลหน้าจอ", "#34A853") { startFlow() })
         root.addView(accentButton("⏹️ หยุด", "#9CA3AF") {
@@ -301,6 +362,10 @@ class MainActivity : Activity() {
             .putInt(KEY_FONT, fontValue)
             .putBoolean(KEY_FALLBACK, fallbackCheck.isChecked)
             .putString(KEY_ENGINE, engineValue)
+            .putInt(KEY_PANEL_THEME, panelThemeValue)
+            .putInt(KEY_PANEL_ALPHA, panelAlphaValue)
+            .putBoolean(KEY_TTS, ttsCheck.isChecked)
+            .putInt(KEY_TTS_RATE, ttsRateValue)
             .apply()
     }
 

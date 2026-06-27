@@ -58,11 +58,17 @@ class OverlayService : Service() {
     private var regionView: FrameLayout? = null      // กล่อง edit (แสดงเฉพาะตอนจัดกรอบ)
     private var regionToggle: TextView? = null
     private var autoToggle: TextView? = null
+    private var barChips: MutableList<View> = mutableListOf()
+    private var barCollapsed = false
 
     // โหมดแปลอัตโนมัติ
     private var autoMode = false
     private var lastSeenText = ""
     private var lastTranslatedText = ""
+
+    // อ่านออกเสียง (TTS)
+    private var tts: android.speech.tts.TextToSpeech? = null
+    @Volatile private var ttsReady = false
 
     // พื้นที่แปล เก็บเป็นสัดส่วนของจอ (รองรับหมุนจอ) — default = แถบล่างกลางจอ
     private var fx = 0.15f
@@ -143,11 +149,40 @@ class OverlayService : Service() {
 
             setupCapture()
             showBar()
+            ensureTts()
         } catch (e: Exception) {
             toast("เริ่มไม่สำเร็จ: ${e.message}")
             stopSelf()
         }
         return START_NOT_STICKY
+    }
+
+    // ---------------- อ่านออกเสียง (TTS) ----------------
+
+    private fun ensureTts() {
+        if (tts != null) return
+        tts = android.speech.tts.TextToSpeech(this) { status ->
+            if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                runCatching { tts?.language = java.util.Locale("th", "TH") }
+                ttsReady = true
+            }
+        }
+    }
+
+    private fun speak(text: String) {
+        val on = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+            .getBoolean(MainActivity.KEY_TTS, false)
+        if (!on || text.isBlank()) return
+        ensureTts()
+        val rate = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+            .getInt(MainActivity.KEY_TTS_RATE, 100) / 100f
+        val doSpeak = Runnable {
+            runCatching {
+                tts?.setSpeechRate(rate)
+                tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "gt")
+            }
+        }
+        if (ttsReady) doSpeak.run() else main.postDelayed(doSpeak, 600)
     }
 
     /** อ่านขนาดจอจริงปัจจุบัน (รองรับการหมุนจอ) */
@@ -257,13 +292,17 @@ class OverlayService : Service() {
         autoToggle = chip("⚡ ออโต้", "#33FFFFFF")
         regionToggle = chip("▢ กรอบ", "#33FFFFFF")
 
+        val sp1 = space(); val sp2 = space(); val sp3 = space()
         container.addView(handle)
-        container.addView(space())
+        container.addView(sp1)
         container.addView(translateBtn)
-        container.addView(space())
+        container.addView(sp2)
         container.addView(autoToggle)
-        container.addView(space())
+        container.addView(sp3)
         container.addView(regionToggle)
+
+        // เก็บไว้สำหรับ "ย่อแถบ" (แตะ ≡ เพื่อย่อ/กาง)
+        barChips = mutableListOf(sp1, translateBtn, sp2, autoToggle!!, sp3, regionToggle!!)
 
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -277,13 +316,19 @@ class OverlayService : Service() {
             y = dp(110)
         }
 
-        attachDrag(handle, lp, container) {}
+        attachDrag(handle, lp, container) { toggleBarCollapsed() }   // แตะ ≡ = ย่อ/กาง, ลาก = ย้าย
         translateBtn.setOnClickListener { onTranslateClick() }
         autoToggle?.setOnClickListener { toggleAuto() }
         regionToggle?.setOnClickListener { toggleEdit() }
 
         runCatching { windowManager.addView(container, lp) }
         bar = container
+    }
+
+    private fun toggleBarCollapsed() {
+        barCollapsed = !barCollapsed
+        barChips.forEach { it.visibility = if (barCollapsed) View.GONE else View.VISIBLE }
+        if (barCollapsed) toast("ย่อแถบแล้ว — แตะ ≡ เพื่อกางกลับ")
     }
 
     // ---------------- โหมดอัตโนมัติ ----------------
@@ -506,6 +551,7 @@ class OverlayService : Service() {
         val cacheKey = "$engine|$game|$text"
         synchronized(cache) { cache[cacheKey] }?.let { cached ->
             showResult(cached)
+            speak(cached)
             busy = false
             return
         }
@@ -515,8 +561,10 @@ class OverlayService : Service() {
             showResult("กำลังแปล (ออฟไลน์)… ครั้งแรกอาจโหลดโมเดลสักครู่")
             scope.launch {
                 val out = withContext(Dispatchers.IO) { OfflineTranslator.translateBlocking(lang, text) }
-                if (!out.startsWith("ERROR")) synchronized(cache) { cache[cacheKey] = out }
-                showResult(if (out.startsWith("ERROR")) "⚠️ ${out.removePrefix("ERROR: ")}" else out)
+                if (!out.startsWith("ERROR")) {
+                    synchronized(cache) { cache[cacheKey] = out }
+                    showResult(out); speak(out)
+                } else showResult("⚠️ ${out.removePrefix("ERROR: ")}")
                 busy = false
             }
             return
@@ -551,7 +599,7 @@ class OverlayService : Service() {
                     showResult("⚠️ ${out.removePrefix("ERROR: ")}")
                 else -> {
                     synchronized(cache) { cache[cacheKey] = out }
-                    showResult(out)
+                    showResult(out); speak(out)
                 }
             }
             busy = false
@@ -585,20 +633,18 @@ class OverlayService : Service() {
     private fun showResult(msg: String) {
         main.post {
             try {
-                val fontSize = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
-                    .getInt(MainActivity.KEY_FONT, 18).coerceIn(12, 34).toFloat()
+                val prefs = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+                val fontSize = prefs.getInt(MainActivity.KEY_FONT, 18).coerceIn(12, 34).toFloat()
+                val themeIdx = prefs.getInt(MainActivity.KEY_PANEL_THEME, 0)
+                    .coerceIn(0, MainActivity.PANEL_THEMES.lastIndex)
+                val alpha = prefs.getInt(MainActivity.KEY_PANEL_ALPHA, 100)
+                val theme = MainActivity.PANEL_THEMES[themeIdx]
                 val rx = (fx * sw).toInt().coerceIn(0, (sw - dp(120)).coerceAtLeast(0))
                 val rTop = (fy * sh).toInt().coerceIn(0, (sh - dp(60)).coerceAtLeast(0))
                 val rw = (fw * sw).toInt().coerceAtLeast(dp(160))
                 if (resultView == null) {
                     val tv = TextView(this).apply {
-                        setTextColor(Color.parseColor("#15151F"))
                         setTypeface(typeface, android.graphics.Typeface.BOLD)
-                        background = GradientDrawable().apply {
-                            setColor(Color.WHITE)                     // ขาวล้วน ทึบ
-                            cornerRadius = dp(18).toFloat()
-                            setStroke(dp(2), Color.parseColor("#667EEA"))
-                        }
                         setPadding(dp(18), dp(14), dp(18), dp(14))
                         setOnClickListener { removeResult() }          // แตะเพื่อปิด
                     }
@@ -614,6 +660,12 @@ class OverlayService : Service() {
                     resultLp = lp
                 }
                 resultView?.textSize = fontSize
+                resultView?.setTextColor(Color.parseColor(theme.third))
+                resultView?.background = GradientDrawable().apply {
+                    setColor(withAlpha(theme.second, alpha))
+                    cornerRadius = dp(18).toFloat()
+                    setStroke(dp(2), Color.parseColor("#667EEA"))
+                }
                 resultLp?.let {
                     it.width = rw
                     if (autoMode) {
@@ -685,6 +737,12 @@ class OverlayService : Service() {
         cornerRadius = dp(22).toFloat()
     }
 
+    private fun withAlpha(colorHex: String, alphaPercent: Int): Int {
+        val c = Color.parseColor(colorHex)
+        val a = alphaPercent.coerceIn(0, 100) * 255 / 100
+        return Color.argb(a, Color.red(c), Color.green(c), Color.blue(c))
+    }
+
     private fun overlayType() =
         if (Build.VERSION.SDK_INT >= 26)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -717,6 +775,7 @@ class OverlayService : Service() {
         recognizers.values.forEach { runCatching { it.close() } }
         recognizers.clear()
         runCatching { OfflineTranslator.close() }
+        runCatching { tts?.stop(); tts?.shutdown() }; tts = null; ttsReady = false
         runCatching { virtualDisplay?.release() }
         runCatching { imageReader?.setOnImageAvailableListener(null, null) }
         runCatching { imageReader?.close() }
