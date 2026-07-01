@@ -31,6 +31,8 @@ import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
+import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -67,6 +69,7 @@ class OverlayService : Service() {
     // ผู้ช่วย AI
     private var askFrame: Bitmap? = null
     private var askPanel: View? = null
+    private var askInputPanel: View? = null
     private var answerPanel: View? = null
     private var answerView: TextView? = null
 
@@ -290,8 +293,17 @@ class OverlayService : Service() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // รอจอหมุนเสร็จก่อน แล้วค่อยสร้าง capture ใหม่ตามขนาดใหม่
-        main.postDelayed({ runCatching { rebuildCapture() } }, 350)
+        // รอจอหมุนเสร็จก่อน แล้วค่อยสร้าง capture ใหม่ + สร้างแถบลอยใหม่ (กันหลุดหายตอนหมุนจอ)
+        main.postDelayed({
+            runCatching { rebuildCapture() }
+            runCatching {
+                // ปิดแผงถาม/คำตอบที่อาจค้าง แล้วสร้างแถบลอยใหม่ตามขนาดจอใหม่
+                removeAskChips(); removeAnswer(); removeAskInput()
+                bar?.let { windowManager.removeView(it) }; bar = null
+                barCollapsed = false
+                showBar()
+            }
+        }, 400)
     }
 
     // ---------------- floating bar ----------------
@@ -301,7 +313,7 @@ class OverlayService : Service() {
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             background = pill("#CC222633")
-            setPadding(dp(6), dp(6), dp(6), dp(6))
+            setPadding(dp(5), dp(4), dp(5), dp(4))
         }
 
         val handle = chip("≡", "#44FFFFFF")
@@ -332,8 +344,8 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (sw - dp(430)).coerceAtLeast(dp(8))
-            y = dp(110)
+            x = (sw - dp(400)).coerceAtLeast(dp(8))
+            y = dp(96)
         }
 
         attachDrag(handle, lp, container) { toggleBarCollapsed() }   // แตะ ≡ = ย่อ/กาง, ลาก = ย้าย
@@ -398,6 +410,16 @@ class OverlayService : Service() {
             })
         }
         panel.addView(TextView(this).apply {
+            text = "✏️ พิมพ์คำถามเอง"
+            setTextColor(Color.WHITE); textSize = 15f
+            background = pill("#55FF9800")
+            setPadding(dp(14), dp(11), dp(14), dp(11))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) }
+            setOnClickListener { removeAskChips(); showAskInput() }
+        })
+        panel.addView(TextView(this).apply {
             text = "✕ ปิด"
             setTextColor(Color.parseColor("#FFCDD2")); textSize = 14f; gravity = Gravity.CENTER
             setPadding(0, dp(12), 0, dp(2))
@@ -418,6 +440,90 @@ class OverlayService : Service() {
     private fun removeAskChips() {
         askPanel?.let { runCatching { windowManager.removeView(it) } }
         askPanel = null
+    }
+
+    /** ช่องพิมพ์คำถามเอง (หน้าต่าง focusable เพื่อให้คีย์บอร์ดขึ้นได้) */
+    private fun showAskInput() {
+        if (askInputPanel != null) return
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F21B1E26")); cornerRadius = dp(18).toFloat()
+                setStroke(dp(2), Color.parseColor("#FF9800"))
+            }
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        panel.addView(TextView(this).apply {
+            text = "✏️ พิมพ์คำถามเกี่ยวกับจอนี้"
+            setTextColor(Color.WHITE); textSize = 15f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 0, dp(8))
+        })
+        val et = EditText(this).apply {
+            hint = "เช่น ปริศนานี้ทำยังไง / ตัวไหนควรอัปเลเวล"
+            setHintTextColor(Color.parseColor("#88FFFFFF"))
+            setTextColor(Color.WHITE); textSize = 15f
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#22FFFFFF")); cornerRadius = dp(10).toFloat()
+            }
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            minLines = 1; maxLines = 3
+        }
+        panel.addView(et, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ))
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL; gravity = Gravity.END
+            setPadding(0, dp(10), 0, 0)
+        }
+        row.addView(TextView(this).apply {
+            text = "ยกเลิก"; setTextColor(Color.parseColor("#FFCDD2")); textSize = 15f
+            setPadding(dp(14), dp(9), dp(14), dp(9))
+            setOnClickListener { removeAskInput(); askFrame?.let { runCatching { it.recycle() } }; askFrame = null }
+        })
+        row.addView(space())
+        row.addView(TextView(this).apply {
+            text = "🚀 ถาม"; setTextColor(Color.WHITE); textSize = 15f
+            background = pill("#FF9800"); setPadding(dp(18), dp(9), dp(18), dp(9))
+            setOnClickListener {
+                val q = et.text.toString().trim()
+                if (q.isBlank()) { toast("พิมพ์คำถามก่อนนะ"); return@setOnClickListener }
+                removeAskInput(); runAsk(q)
+            }
+        })
+        panel.addView(row)
+
+        val lp = WindowManager.LayoutParams(
+            (sw - dp(80)).coerceAtMost(dp(560)),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,   // ไม่ใส่ NOT_FOCUSABLE → คีย์บอร์ดขึ้นได้
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE or
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+        runCatching { windowManager.addView(panel, lp) }
+        askInputPanel = panel
+        et.requestFocus()
+        main.postDelayed({
+            runCatching {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }, 180)
+    }
+
+    private fun removeAskInput() {
+        askInputPanel?.let { p ->
+            runCatching {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.hideSoftInputFromWindow(p.windowToken, 0)
+            }
+            runCatching { windowManager.removeView(p) }
+        }
+        askInputPanel = null
     }
 
     private fun runAsk(question: String) {
@@ -1016,14 +1122,14 @@ class OverlayService : Service() {
     private fun chip(text: String, color: String) = TextView(this).apply {
         this.text = text
         setTextColor(Color.WHITE)
-        textSize = 15f
+        textSize = 14f
         gravity = Gravity.CENTER
         background = pill(color)
-        setPadding(dp(16), dp(10), dp(16), dp(10))
+        setPadding(dp(12), dp(8), dp(12), dp(8))
     }
 
     private fun space() = View(this).apply {
-        layoutParams = LinearLayout.LayoutParams(dp(6), 1)
+        layoutParams = LinearLayout.LayoutParams(dp(4), 1)
     }
 
     private fun pill(color: String) = GradientDrawable().apply {
@@ -1081,7 +1187,7 @@ class OverlayService : Service() {
         bar?.let { runCatching { windowManager.removeView(it) } }; bar = null
         regionView?.let { runCatching { windowManager.removeView(it) } }; regionView = null
         removeResult()
-        removeAskChips(); removeAnswer()
+        removeAskChips(); removeAskInput(); removeAnswer()
         askFrame?.let { runCatching { it.recycle() } }; askFrame = null
     }
 
