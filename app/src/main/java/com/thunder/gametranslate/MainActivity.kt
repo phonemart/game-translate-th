@@ -221,7 +221,7 @@ class MainActivity : Activity() {
         }
 
         // ---- card: game ----
-        card(root, "🎯 ชื่อเกมที่กำลังเล่น") { c ->
+        card(root, "🎯 ชื่อเกมที่กำลังเล่น", true) { c ->
             c.addView(hint("ช่วยให้ AI แปลตรงบริบท (ชื่อตัวละคร/ศัพท์เฉพาะ)"))
             gameInput = EditText(this).apply {
                 inputType = InputType.TYPE_CLASS_TEXT
@@ -232,7 +232,7 @@ class MainActivity : Activity() {
         }
 
         // ---- card: language ----
-        card(root, "🌏 ภาษาในเกม (ภาษาต้นทาง)") { c ->
+        card(root, "🌏 ภาษาในเกม (ภาษาต้นทาง)", true) { c ->
             val sp = Spinner(this)
             sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, LANGS.map { it.first })
             sp.setSelection(LANGS.indexOfFirst { it.second == langValue }.coerceAtLeast(0))
@@ -272,7 +272,7 @@ class MainActivity : Activity() {
         }
 
         // ---- card: model ----
-        card(root, "🤖 โมเดล (ตามเอนจินที่เลือก)") { c ->
+        card(root, "🤖 โมเดล (ตามเอนจินที่เลือก)", true) { c ->
             c.addView(hint("รายชื่อโมเดลของเอนจินที่เลือกด้านบน"))
             modelSpinner = Spinner(this)
             c.addView(modelSpinner)
@@ -299,7 +299,7 @@ class MainActivity : Activity() {
         }
 
         // ---- card: font size ----
-        card(root, "🔠 ขนาดตัวอักษรคำแปล") { c ->
+        card(root, "🔠 ขนาดตัวอักษรคำแปล", true) { c ->
             val sp = Spinner(this)
             sp.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, FONTS.map { it.first })
             sp.setSelection(FONTS.indexOfFirst { it.second == fontValue }.coerceAtLeast(1))
@@ -311,7 +311,7 @@ class MainActivity : Activity() {
         }
 
         // ---- card: panel customize ----
-        card(root, "🎨 หน้าตากล่องคำแปล") { c ->
+        card(root, "🎨 หน้าตากล่องคำแปล", true) { c ->
             c.addView(hint("ธีมสี"))
             val spTheme = Spinner(this)
             spTheme.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, PANEL_THEMES.map { it.first })
@@ -333,7 +333,7 @@ class MainActivity : Activity() {
         }
 
         // ---- card: TTS ----
-        card(root, "🔊 อ่านออกเสียงคำแปล") { c ->
+        card(root, "🔊 อ่านออกเสียงคำแปล", true) { c ->
             ttsCheck = CheckBox(this).apply {
                 text = "อ่านออกเสียงไทยอัตโนมัติเมื่อแปลเสร็จ"
                 isChecked = prefs.getBoolean(KEY_TTS, false)
@@ -357,7 +357,7 @@ class MainActivity : Activity() {
         })
 
         // ---- card: maintenance ----
-        card(root, "⚙️ อื่นๆ") { c ->
+        card(root, "⚙️ อื่นๆ", true) { c ->
             c.addView(plainButton("🔄 ตรวจหาอัปเดต") { checkUpdate() })
             c.addView(plainButton("🔋 ปิดประหยัดแบต (กันแอปเด้ง)") { requestIgnoreBattery() })
             statusView = TextView(this).apply {
@@ -367,18 +367,18 @@ class MainActivity : Activity() {
             c.addView(statusView)
         }
 
-        root.addView(TextView(this).apply {
-            text = """
-                วิธีใช้:
-                1. ขอ API Key ฟรี → วาง → บันทึก
-                2. เลือกภาษาในเกม + โมเดล + ขนาดฟอนต์
-                3. กด "เริ่มแปลหน้าจอ" → อนุญาตสิทธิ์
-                4. ในเกม: กด "▢ กรอบ" จัดกรอบครอบบทพูด → "เสร็จ"
-                5. กด "แปล" = แปล 1 ครั้ง  |  "⚡ ออโต้" = แปลเองทุกบทพูด
-            """.trimIndent()
-            setPadding(dp(4), dp(18), dp(4), 0)
-            setTextColor(colSub); textSize = 13f
-        })
+        card(root, "❓ วิธีใช้", true) { c ->
+            c.addView(TextView(this).apply {
+                text = """
+                    1. ขอ API Key ฟรี → วาง → บันทึก
+                    2. เลือกเอนจิน/ภาษา (พับไว้ในการ์ดด้านบน)
+                    3. กด "เริ่มแปลหน้าจอ" → อนุญาตสิทธิ์
+                    4. ในเกม: แตะ 💬 เปิดเมนู → "▢ กรอบ" จัดกรอบ → "เสร็จ"
+                    5. "แปล" = แปล 1 ครั้ง | "⚡ ออโต้" = แปลเอง | "💡 ถาม" = ผู้ช่วย AI
+                """.trimIndent()
+                setTextColor(colSub); textSize = 13f
+            })
+        }
 
         root.addView(scrollSpacerDummy())
         scroll.addView(root)
@@ -387,24 +387,37 @@ class MainActivity : Activity() {
 
     // ---------------- UI helpers ----------------
 
-    private fun card(parent: LinearLayout, title: String, build: (LinearLayout) -> Unit) {
+    private fun card(parent: LinearLayout, title: String, collapsed: Boolean = false, build: (LinearLayout) -> Unit) {
         val c = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             background = GradientDrawable().apply {
                 setColor(colCard); cornerRadius = dp(16).toFloat()
                 if (isDark) setStroke(dp(1), Color.parseColor("#2C313C"))
             }
-            setPadding(dp(16), dp(14), dp(16), dp(16))
+            setPadding(dp(16), dp(12), dp(16), dp(12))
         }
-        c.addView(TextView(this).apply {
-            text = title; textSize = 15f
+        val body = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        val titleView = TextView(this).apply {
+            textSize = 15f
             setTextColor(colText)
             setTypeface(typeface, android.graphics.Typeface.BOLD)
-            setPadding(0, 0, 0, dp(8))
-        })
-        build(c)
+            setPadding(0, dp(2), 0, dp(2))
+        }
+        fun refresh() { titleView.text = (if (body.visibility == View.GONE) "▶  " else "▼  ") + title }
+        titleView.setOnClickListener {
+            body.visibility = if (body.visibility == View.GONE) View.VISIBLE else View.GONE
+            refresh()
+        }
+        c.addView(titleView)
+        build(body)
+        c.addView(body)
+        body.visibility = if (collapsed) View.GONE else View.VISIBLE
+        refresh()
         val lp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
-        lp.bottomMargin = dp(14)
+        lp.bottomMargin = dp(10)
         parent.addView(c, lp)
     }
 
