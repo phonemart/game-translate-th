@@ -65,6 +65,7 @@ class OverlayService : Service() {
     private var autoToggle: TextView? = null
     private var barChips: MutableList<View> = mutableListOf()
     private var barCollapsed = false
+    private var firstBar = true
 
     // ผู้ช่วย AI
     private var askFrame: Bitmap? = null
@@ -316,7 +317,7 @@ class OverlayService : Service() {
             setPadding(dp(5), dp(4), dp(5), dp(4))
         }
 
-        val handle = chip("≡", "#44FFFFFF")
+        val handle = chip("💬", "#CC667EEA")
         val translateBtn = chip("แปล", "#667EEA")
         val askBtn = chip("💡 ถาม", "#FF9800")
         autoToggle = chip("⚡ ออโต้", "#33FFFFFF")
@@ -356,12 +357,20 @@ class OverlayService : Service() {
 
         runCatching { windowManager.addView(container, lp) }
         bar = container
+
+        // เริ่มมาแบบย่อ = จุด 💬 เล็กๆ (ไม่บังจอ) แตะเพื่อกางเมนู
+        barCollapsed = true
+        applyBarCollapsed()
+        if (firstBar) { firstBar = false; toast("แตะ 💬 เพื่อเปิดเมนู แปล/ถาม/ออโต้/กรอบ") }
+    }
+
+    private fun applyBarCollapsed() {
+        barChips.forEach { it.visibility = if (barCollapsed) View.GONE else View.VISIBLE }
     }
 
     private fun toggleBarCollapsed() {
         barCollapsed = !barCollapsed
-        barChips.forEach { it.visibility = if (barCollapsed) View.GONE else View.VISIBLE }
-        if (barCollapsed) toast("ย่อแถบแล้ว — แตะ ≡ เพื่อกางกลับ")
+        applyBarCollapsed()
     }
 
     // ---------------- ผู้ช่วย AI ----------------
