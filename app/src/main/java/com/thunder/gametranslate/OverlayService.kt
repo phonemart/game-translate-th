@@ -334,8 +334,8 @@ class OverlayService : Service() {
         container.addView(sp4)
         container.addView(regionToggle)
 
-        // เก็บไว้สำหรับ "ย่อแถบ" (แตะ ≡ เพื่อย่อ/กาง)
-        barChips = mutableListOf(sp1, translateBtn, sp2, askBtn, sp3, autoToggle!!, sp4, regionToggle!!)
+        // ย่อแล้วจะเหลือ [💬 แปล] เสมอ (แปลกดบ่อยสุด) — ซ่อนแค่ ถาม/ออโต้/กรอบ
+        barChips = mutableListOf(sp2, askBtn, sp3, autoToggle!!, sp4, regionToggle!!)
 
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -361,7 +361,7 @@ class OverlayService : Service() {
         // เริ่มมาแบบย่อ = จุด 💬 เล็กๆ (ไม่บังจอ) แตะเพื่อกางเมนู
         barCollapsed = true
         applyBarCollapsed()
-        if (firstBar) { firstBar = false; toast("แตะ 💬 เพื่อเปิดเมนู แปล/ถาม/ออโต้/กรอบ") }
+        if (firstBar) { firstBar = false; toast("💬 = เปิดเมนูเพิ่ม (ถาม/ออโต้/กรอบ) · ปุ่มแปลอยู่ให้กดตลอด") }
     }
 
     private fun applyBarCollapsed() {
