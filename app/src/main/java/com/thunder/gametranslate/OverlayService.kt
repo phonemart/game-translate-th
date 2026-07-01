@@ -74,6 +74,13 @@ class OverlayService : Service() {
     private var answerPanel: View? = null
     private var answerView: TextView? = null
 
+    // โหมดคุยกับ AI (ไม่แคปจอ)
+    private var chatPanel: View? = null
+    private var chatMessages: LinearLayout? = null
+    private var chatScroll: ScrollView? = null
+    private val chatHistory = mutableListOf<Pair<String, String>>()   // (user|ai, text)
+    private var chatBusy = false
+
     private val ASK_PRESETS = listOf(
         "ตอนนี้ควรทำอะไรต่อ?",
         "อธิบายจอนี้ให้หน่อย",
@@ -326,22 +333,26 @@ class OverlayService : Service() {
         val handle = chip("💬", "#CC667EEA")
         val translateBtn = chip("แปล", "#667EEA")
         val askBtn = chip("💡 ถาม", "#FF9800")
+        val chatBtn = chip("🗨️ คุย", "#33FFFFFF")
         autoToggle = chip("⚡ ออโต้", "#33FFFFFF")
         regionToggle = chip("▢ กรอบ", "#33FFFFFF")
 
-        val sp1 = space(); val sp2 = space(); val sp3 = space(); val sp4 = space()
+        val sp1 = space(); val sp2 = space(); val sp3 = space(); val sp4 = space(); val sp5 = space()
         container.addView(handle)
         container.addView(sp1)
         container.addView(translateBtn)
         container.addView(sp2)
         container.addView(askBtn)
         container.addView(sp3)
-        container.addView(autoToggle)
+        container.addView(chatBtn)
         container.addView(sp4)
+        container.addView(autoToggle)
+        container.addView(sp5)
         container.addView(regionToggle)
 
-        // ย่อแล้วจะเหลือ [💬 แปล] เสมอ (แปลกดบ่อยสุด) — ซ่อนแค่ ถาม/ออโต้/กรอบ
-        barChips = mutableListOf(sp2, askBtn, sp3, autoToggle!!, sp4, regionToggle!!)
+        // ย่อแล้วจะเหลือ [💬 แปล] เสมอ (แปลกดบ่อยสุด) — ซ่อน ถาม/คุย/ออโต้/กรอบ
+        barChips = mutableListOf(sp2, askBtn, sp3, chatBtn, sp4, autoToggle!!, sp5, regionToggle!!)
+        chatBtn.setOnClickListener { openChat() }
 
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -678,6 +689,168 @@ class OverlayService : Service() {
     private fun removeAnswer() {
         answerPanel?.let { runCatching { windowManager.removeView(it) } }
         answerPanel = null; answerView = null
+    }
+
+    // ---------------- คุยกับ AI (ไม่แคปจอ) ----------------
+
+    private fun openChat() {
+        if (chatPanel != null) return
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F21B1E26")); cornerRadius = dp(18).toFloat()
+                setStroke(dp(2), Color.parseColor("#667EEA"))
+            }
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        // header
+        val header = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        header.addView(TextView(this).apply {
+            text = "🗨️ คุยกับ AI"; setTextColor(Color.parseColor("#9FB4FF")); textSize = 15f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        })
+        header.addView(TextView(this).apply {
+            text = "🗑️"; textSize = 17f; setPadding(dp(8), dp(4), dp(10), dp(4)); setOnClickListener { clearChat() }
+        })
+        header.addView(TextView(this).apply {
+            text = "✕"; setTextColor(Color.WHITE); textSize = 18f; setPadding(dp(8), dp(4), dp(4), dp(4)); setOnClickListener { closeChat() }
+        })
+        panel.addView(header)
+        // messages
+        val scroll = ScrollView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (sh * 0.5f).toInt())
+        }
+        val msgs = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, dp(6), 0, dp(6)) }
+        scroll.addView(msgs)
+        panel.addView(scroll)
+        chatScroll = scroll; chatMessages = msgs
+        // input row
+        val et = EditText(this).apply {
+            hint = "พิมพ์คุยได้เลย…"; setHintTextColor(Color.parseColor("#88FFFFFF"))
+            setTextColor(Color.WHITE); textSize = 15f
+            background = GradientDrawable().apply { setColor(Color.parseColor("#22FFFFFF")); cornerRadius = dp(10).toFloat() }
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            maxLines = 3
+        }
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(0, dp(8), 0, 0) }
+        row.addView(et, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        row.addView(TextView(this).apply {
+            text = "🚀"; textSize = 20f; setPadding(dp(12), dp(6), dp(6), dp(6))
+            setOnClickListener {
+                val q = et.text.toString().trim()
+                if (q.isNotBlank()) { et.setText(""); sendChat(q) }
+            }
+        })
+        panel.addView(row)
+
+        val lp = WindowManager.LayoutParams(
+            (sw - dp(40)).coerceAtMost(dp(680)),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,   // focusable → คีย์บอร์ดขึ้นได้
+            PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.CENTER
+            softInputMode = WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE or
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        }
+        runCatching { windowManager.addView(panel, lp) }
+        chatPanel = panel
+
+        // แสดงบทสนทนาเดิม (ถ้ามี) หรือทักทาย
+        if (chatHistory.isEmpty()) addChatBubble("ai", "สวัสดีครับ 👋 อยากคุยเรื่องอะไรดี? (โหมดนี้ไม่แคปจอนะ)")
+        else for ((role, text) in chatHistory) addChatBubble(role, text)
+
+        et.requestFocus()
+        main.postDelayed({
+            runCatching {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.showSoftInput(et, InputMethodManager.SHOW_IMPLICIT)
+            }
+        }, 180)
+    }
+
+    private fun addChatBubble(role: String, text: String): TextView {
+        val tv = TextView(this).apply {
+            this.text = text; textSize = 15f
+            maxWidth = (sw * 0.68f).toInt()
+            setPadding(dp(12), dp(9), dp(12), dp(9))
+            if (role == "user") {
+                setTextColor(Color.WHITE)
+                background = GradientDrawable().apply { setColor(Color.parseColor("#667EEA")); cornerRadius = dp(14).toFloat() }
+            } else {
+                setTextColor(Color.parseColor("#16181F"))
+                background = GradientDrawable().apply { setColor(Color.parseColor("#ECEFF6")); cornerRadius = dp(14).toFloat() }
+            }
+        }
+        val lp = LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
+        ).apply { topMargin = dp(6); gravity = if (role == "user") Gravity.END else Gravity.START }
+        chatMessages?.addView(tv, lp)
+        chatScroll?.post { chatScroll?.fullScroll(View.FOCUS_DOWN) }
+        return tv
+    }
+
+    private fun sendChat(text: String) {
+        if (chatBusy) return
+        chatBusy = true
+        addChatBubble("user", text)
+        chatHistory.add("user" to text)
+        val typing = addChatBubble("ai", "…")
+        val prefs = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+        val engine = prefs.getString(MainActivity.KEY_ENGINE, "gemini").orEmpty().ifBlank { "gemini" }
+        scope.launch {
+            val out = withContext(Dispatchers.IO) { callChat(engine, prefs) }
+            val clean = when {
+                out.startsWith("QUOTA:") -> "⚠️ โควต้าเต็ม ลองใหม่ หรือสลับเอนจิน"
+                out.startsWith("ERROR") -> "⚠️ ${out.removePrefix("ERROR: ")}"
+                else -> out
+            }
+            typing.text = clean
+            chatScroll?.post { chatScroll?.fullScroll(View.FOCUS_DOWN) }
+            if (!out.startsWith("ERROR") && !out.startsWith("QUOTA:")) chatHistory.add("ai" to out)
+            chatBusy = false
+        }
+    }
+
+    private fun callChat(engine: String, prefs: android.content.SharedPreferences): String {
+        val turns = chatHistory.toList()
+        return when (engine) {
+            "offline" -> "ERROR: โหมดคุยต้องใช้ Gemini / Groq / DeepSeek (ออฟไลน์ไม่ได้)"
+            "gemini" -> {
+                val key = prefs.getString(MainActivity.KEY_API, "").orEmpty()
+                val model = prefs.getString(MainActivity.KEY_MODEL, MainActivity.DEFAULT_MODEL).orEmpty().ifBlank { MainActivity.DEFAULT_MODEL }
+                GeminiClient.chat(key, model, turns)
+            }
+            "groq" -> {
+                val key = prefs.getString(MainActivity.KEY_GROQ, "").orEmpty()
+                val model = prefs.getString(MainActivity.KEY_MODEL_GROQ, MainActivity.GROQ_MODEL).orEmpty().ifBlank { MainActivity.GROQ_MODEL }
+                OpenAIClient.chat(MainActivity.GROQ_URL, key, model, turns)
+            }
+            else -> {
+                val key = prefs.getString(MainActivity.KEY_DEEPSEEK, "").orEmpty()
+                val model = prefs.getString(MainActivity.KEY_MODEL_DEEPSEEK, MainActivity.DEEPSEEK_MODEL).orEmpty().ifBlank { MainActivity.DEEPSEEK_MODEL }
+                OpenAIClient.chat(MainActivity.DEEPSEEK_URL, key, model, turns)
+            }
+        }
+    }
+
+    private fun clearChat() {
+        chatHistory.clear()
+        chatMessages?.removeAllViews()
+        addChatBubble("ai", "ล้างแล้ว เริ่มคุยใหม่ได้เลย 👋")
+    }
+
+    private fun closeChat() {
+        chatPanel?.let { p ->
+            runCatching {
+                val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+                imm.hideSoftInputFromWindow(p.windowToken, 0)
+            }
+            runCatching { windowManager.removeView(p) }
+        }
+        chatPanel = null; chatMessages = null; chatScroll = null
     }
 
     // ---------------- โหมดอัตโนมัติ ----------------
@@ -1213,7 +1386,7 @@ class OverlayService : Service() {
         bar?.let { runCatching { windowManager.removeView(it) } }; bar = null
         regionView?.let { runCatching { windowManager.removeView(it) } }; regionView = null
         removeResult()
-        removeAskChips(); removeAskInput(); removeAnswer()
+        removeAskChips(); removeAskInput(); removeAnswer(); closeChat()
         askFrame?.let { runCatching { it.recycle() } }; askFrame = null
     }
 

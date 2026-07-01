@@ -98,6 +98,30 @@ object GeminiClient {
         return send(model, apiKey, body)
     }
 
+    /** โหมดคุยเล่น (chat) — คุยต่อเนื่องกับ Gemini เป็นภาษาไทย (ไม่ต้องแคปจอ) */
+    fun chat(apiKey: String, model: String, turns: List<Pair<String, String>>): String {
+        if (apiKey.isBlank()) return "ERROR: ยังไม่ได้ใส่ Gemini API Key"
+        val contents = org.json.JSONArray()
+        for ((role, text) in turns) {
+            contents.put(JSONObject()
+                .put("role", if (role == "user") "user" else "model")
+                .put("parts", org.json.JSONArray().put(JSONObject().put("text", text))))
+        }
+        val genConfig = JSONObject().put("temperature", 0.7)
+        val m = model.lowercase()
+        if (m.contains("2.5") || m.contains("flash-latest") || m.contains("latest")) {
+            genConfig.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        }
+        val body = JSONObject().apply {
+            put("system_instruction", JSONObject().put("parts", org.json.JSONArray().put(
+                JSONObject().put("text", "คุณเป็นผู้ช่วย AI ที่เป็นมิตรและเป็นกันเอง พูดคุยกับผู้ใช้เป็นภาษาไทย ตอบสั้นกระชับ เป็นธรรมชาติ ช่วยเหลือได้ทุกเรื่องรวมถึงเรื่องเกม")
+            )))
+            put("contents", contents)
+            put("generationConfig", genConfig)
+        }.toString()
+        return send(model, apiKey, body)
+    }
+
     /** ยิง generateContent + จัดการ error/429 + parse (ใช้ร่วมกันทั้ง translate และ ask) */
     private fun send(model: String, apiKey: String, body: String): String {
         val url = "https://generativelanguage.googleapis.com/v1beta/models/" +

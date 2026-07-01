@@ -118,6 +118,36 @@ object OpenAIClient {
         }
     }
 
+    /** โหมดคุยเล่น (chat) สำหรับ Groq/DeepSeek */
+    fun chat(baseUrl: String, apiKey: String, model: String, turns: List<Pair<String, String>>): String {
+        if (apiKey.isBlank()) return "ERROR: ยังไม่ได้ใส่ API Key"
+        val messages = JSONArray()
+        messages.put(JSONObject().put("role", "system")
+            .put("content", "คุณเป็นผู้ช่วย AI ที่เป็นมิตร คุยกับผู้ใช้เป็นภาษาไทย ตอบสั้นกระชับ เป็นธรรมชาติ ช่วยได้ทุกเรื่องรวมถึงเรื่องเกม"))
+        for ((role, text) in turns) {
+            messages.put(JSONObject().put("role", if (role == "user") "user" else "assistant").put("content", text))
+        }
+        val body = JSONObject().apply {
+            put("model", model); put("temperature", 0.7); put("messages", messages)
+        }.toString()
+        val request = Request.Builder().url(baseUrl)
+            .header("Authorization", "Bearer ${apiKey.trim()}")
+            .post(body.toRequestBody(JSON)).build()
+        return try {
+            client.newCall(request).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    if (resp.code == 429) return "QUOTA: ⏳ โควต้าเต็ม"
+                    val msg = runCatching {
+                        JSONObject(text).getJSONObject("error").getString("message")
+                    }.getOrDefault(text.take(200))
+                    return "ERROR: (${resp.code}) $msg"
+                }
+                parse(text)
+            }
+        } catch (e: Exception) { "ERROR: ${e.message}" }
+    }
+
     private fun parse(json: String): String {
         return try {
             val choices = JSONObject(json).optJSONArray("choices")
