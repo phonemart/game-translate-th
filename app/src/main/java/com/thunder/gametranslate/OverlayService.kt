@@ -125,6 +125,7 @@ class OverlayService : Service() {
     private var sh = 0
     private var dpi = 0
     private var busy = false
+    private var restarting = false
 
     // แคชคำแปล (LRU) — กดแปลข้อความเดิมซ้ำ → คืนทันที ไม่ยิง API
     private val cache = object : LinkedHashMap<String, String>(16, 0.75f, true) {
@@ -294,15 +295,20 @@ class OverlayService : Service() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // รอจอหมุนเสร็จก่อน แล้วค่อยสร้าง capture ใหม่ + สร้างแถบลอยใหม่ (กันหลุดหายตอนหมุนจอ)
         main.postDelayed({
+            if (projection == null) return@postDelayed   // capture ตายแล้ว อย่าสร้างแถบ zombie
             runCatching { rebuildCapture() }
+            runCatching { removeAskChips(); removeAskInput(); removeAnswer() }
+            // ย้ายแถบให้อยู่ในจอหลังหมุน (ไม่สร้างใหม่ กัน state เสีย); ถ้าแถบหายจริงค่อยสร้าง
             runCatching {
-                // ปิดแผงถาม/คำตอบที่อาจค้าง แล้วสร้างแถบลอยใหม่ตามขนาดจอใหม่
-                removeAskChips(); removeAnswer(); removeAskInput()
-                bar?.let { windowManager.removeView(it) }; bar = null
-                barCollapsed = false
-                showBar()
+                val b = bar
+                if (b != null) {
+                    (b.layoutParams as? WindowManager.LayoutParams)?.let { lp ->
+                        lp.x = lp.x.coerceIn(0, (sw - dp(60)).coerceAtLeast(0))
+                        lp.y = lp.y.coerceIn(0, (sh - dp(48)).coerceAtLeast(0))
+                        runCatching { windowManager.updateViewLayout(b, lp) }
+                    }
+                } else showBar()
             }
         }, 400)
     }
@@ -1016,7 +1022,18 @@ class OverlayService : Service() {
     }
 
     private fun grabBitmap(): Bitmap? {
-        if (imageReader == null) { captureErr = "ยังไม่ได้เริ่มจับภาพ"; return null }
+        if (imageReader == null) {
+            // self-heal: ถ้า projection ยังอยู่ (เช่นหลังหมุนจอ) สร้างการจับภาพใหม่
+            if (projection != null && captureHandler != null) {
+                runCatching { setupCapture() }
+                lastCapMs = 0L
+            }
+            if (imageReader == null) {
+                captureErr = "การจับภาพหลุด (หมุนจอ/ระบบปิด)"
+                if (projection == null) main.post { promptRestart() }   // ตายจริง → เปิดหน้าเริ่มใหม่
+                return null
+            }
+        }
         // รอเฟรมแรกได้นานสุด ~2 วินาที (หลังจากนั้นมีเฟรมล่าสุดเสมอ)
         var tries = 0
         while (latestFrame == null && tries < 20) {
@@ -1203,6 +1220,20 @@ class OverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         cleanup()
+    }
+
+    /** เปิด MainActivity เพื่อขอสิทธิ์จับภาพใหม่ (เมื่อ MediaProjection หลุด เช่นหลังหมุนจอ) */
+    private fun promptRestart() {
+        if (restarting) return
+        restarting = true
+        toast("การจับภาพหลุด — กำลังเปิดหน้าเริ่มใหม่ กด \"เริ่มแปลหน้าจอ\"")
+        runCatching {
+            startActivity(Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                putExtra("autostart", true)
+            })
+        }
+        main.postDelayed({ restarting = false }, 5000)
     }
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()

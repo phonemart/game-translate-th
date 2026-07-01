@@ -383,6 +383,19 @@ class MainActivity : Activity() {
         root.addView(scrollSpacerDummy())
         scroll.addView(root)
         setContentView(scroll)
+
+        // ถูกเปิดจาก service เพราะการจับภาพหลุด → ขอสิทธิ์จับภาพใหม่อัตโนมัติ
+        if (intent?.getBooleanExtra("autostart", false) == true) {
+            scroll.post { startFlow() }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        if (intent?.getBooleanExtra("autostart", false) == true) {
+            window.decorView.post { startFlow() }
+        }
     }
 
     // ---------------- UI helpers ----------------
