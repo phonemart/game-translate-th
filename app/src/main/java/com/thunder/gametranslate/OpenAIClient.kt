@@ -71,6 +71,53 @@ object OpenAIClient {
         }
     }
 
+    /**
+     * ผู้ช่วย AI โหมดข้อความ — ส่ง "ข้อความที่ OCR จากจอ" + คำถาม (สำหรับ Groq/DeepSeek ที่ไม่มี vision)
+     */
+    fun ask(baseUrl: String, apiKey: String, model: String, question: String, gameContext: String, screenText: String): String {
+        if (apiKey.isBlank()) return "ERROR: ยังไม่ได้ใส่ API Key"
+        val ctx = if (gameContext.isBlank()) "" else "ผู้เล่นกำลังเล่นเกม \"$gameContext\".\n"
+        val prompt = """
+            คุณเป็นผู้ช่วยเล่นเกม ผู้เล่นส่ง "ข้อความที่อ่านได้จากหน้าจอเกม" + คำถามมาให้
+            ตอบเป็นภาษาไทย สั้น กระชับ ตรงประเด็น อิงจากข้อความบนจอ ถ้าข้อมูลไม่พอให้บอกตรงๆ ห้ามเดามั่ว
+            ${ctx}
+            ข้อความบนจอ:
+            ${screenText.ifBlank { "(อ่านข้อความไม่ได้)" }}
+
+            คำถาม: $question
+        """.trimIndent()
+
+        val body = JSONObject().apply {
+            put("model", model)
+            put("temperature", 0.4)
+            put("messages", JSONArray().put(
+                JSONObject().put("role", "user").put("content", prompt)
+            ))
+        }.toString()
+
+        val request = Request.Builder()
+            .url(baseUrl)
+            .header("Authorization", "Bearer ${apiKey.trim()}")
+            .post(body.toRequestBody(JSON))
+            .build()
+
+        return try {
+            client.newCall(request).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                if (!resp.isSuccessful) {
+                    if (resp.code == 429) return "QUOTA: ⏳ โควต้าเต็ม — รอสักครู่"
+                    val msg = runCatching {
+                        JSONObject(text).getJSONObject("error").getString("message")
+                    }.getOrDefault(text.take(200))
+                    return "ERROR: (${resp.code}) $msg"
+                }
+                parse(text)
+            }
+        } catch (e: Exception) {
+            "ERROR: ${e.message}"
+        }
+    }
+
     private fun parse(json: String): String {
         return try {
             val choices = JSONObject(json).optJSONArray("choices")

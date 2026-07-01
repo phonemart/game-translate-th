@@ -24,6 +24,9 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.SystemClock
+import android.util.Base64
+import android.widget.ScrollView
+import java.io.ByteArrayOutputStream
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -60,6 +63,20 @@ class OverlayService : Service() {
     private var autoToggle: TextView? = null
     private var barChips: MutableList<View> = mutableListOf()
     private var barCollapsed = false
+
+    // ผู้ช่วย AI
+    private var askFrame: Bitmap? = null
+    private var askPanel: View? = null
+    private var answerPanel: View? = null
+    private var answerView: TextView? = null
+
+    private val ASK_PRESETS = listOf(
+        "ตอนนี้ควรทำอะไรต่อ?",
+        "อธิบายจอนี้ให้หน่อย",
+        "ตรงนี้/ตัวนี้คืออะไร?",
+        "ควรไปทางไหนต่อ?",
+        "มีอะไรที่ควรระวัง/สำคัญไหม?"
+    )
 
     // โหมดแปลอัตโนมัติ
     private var autoMode = false
@@ -169,8 +186,8 @@ class OverlayService : Service() {
         }
     }
 
-    private fun speak(text: String) {
-        val on = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+    private fun speak(text: String, force: Boolean = false) {
+        val on = force || getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
             .getBoolean(MainActivity.KEY_TTS, false)
         if (!on || text.isBlank()) return
         ensureTts()
@@ -289,20 +306,23 @@ class OverlayService : Service() {
 
         val handle = chip("≡", "#44FFFFFF")
         val translateBtn = chip("แปล", "#667EEA")
+        val askBtn = chip("💡 ถาม", "#FF9800")
         autoToggle = chip("⚡ ออโต้", "#33FFFFFF")
         regionToggle = chip("▢ กรอบ", "#33FFFFFF")
 
-        val sp1 = space(); val sp2 = space(); val sp3 = space()
+        val sp1 = space(); val sp2 = space(); val sp3 = space(); val sp4 = space()
         container.addView(handle)
         container.addView(sp1)
         container.addView(translateBtn)
         container.addView(sp2)
-        container.addView(autoToggle)
+        container.addView(askBtn)
         container.addView(sp3)
+        container.addView(autoToggle)
+        container.addView(sp4)
         container.addView(regionToggle)
 
         // เก็บไว้สำหรับ "ย่อแถบ" (แตะ ≡ เพื่อย่อ/กาง)
-        barChips = mutableListOf(sp1, translateBtn, sp2, autoToggle!!, sp3, regionToggle!!)
+        barChips = mutableListOf(sp1, translateBtn, sp2, askBtn, sp3, autoToggle!!, sp4, regionToggle!!)
 
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -312,12 +332,13 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = (sw - dp(330)).coerceAtLeast(dp(8))
+            x = (sw - dp(430)).coerceAtLeast(dp(8))
             y = dp(110)
         }
 
         attachDrag(handle, lp, container) { toggleBarCollapsed() }   // แตะ ≡ = ย่อ/กาง, ลาก = ย้าย
         translateBtn.setOnClickListener { onTranslateClick() }
+        askBtn.setOnClickListener { onAskClick() }
         autoToggle?.setOnClickListener { toggleAuto() }
         regionToggle?.setOnClickListener { toggleEdit() }
 
@@ -329,6 +350,213 @@ class OverlayService : Service() {
         barCollapsed = !barCollapsed
         barChips.forEach { it.visibility = if (barCollapsed) View.GONE else View.VISIBLE }
         if (barCollapsed) toast("ย่อแถบแล้ว — แตะ ≡ เพื่อกางกลับ")
+    }
+
+    // ---------------- ผู้ช่วย AI ----------------
+
+    private fun onAskClick() {
+        if (busy) return
+        removeAskChips(); removeAnswer()
+        bar?.visibility = View.GONE
+        removeResult()
+        // ซ่อน overlay ก่อน แล้วจับภาพจอสะอาดๆ
+        main.postDelayed({
+            askFrame?.let { runCatching { it.recycle() } }
+            askFrame = try { grabBitmap() } catch (e: Exception) { null }
+            bar?.visibility = View.VISIBLE
+            if (askFrame == null) { toast("จับภาพหน้าจอไม่ได้ ลองใหม่"); return@postDelayed }
+            showAskChips()
+        }, 250)
+    }
+
+    private fun showAskChips() {
+        if (askPanel != null) return
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F21B1E26")); cornerRadius = dp(18).toFloat()
+                setStroke(dp(2), Color.parseColor("#FF9800"))
+            }
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+        }
+        panel.addView(TextView(this).apply {
+            text = "💡 ถาม AI เกี่ยวกับจอนี้"
+            setTextColor(Color.WHITE); textSize = 16f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setPadding(0, 0, 0, dp(8))
+        })
+        for (q in ASK_PRESETS) {
+            panel.addView(TextView(this).apply {
+                text = q
+                setTextColor(Color.WHITE); textSize = 15f
+                background = pill("#33FFFFFF")
+                setPadding(dp(14), dp(11), dp(14), dp(11))
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { topMargin = dp(6) }
+                setOnClickListener { removeAskChips(); runAsk(q) }
+            })
+        }
+        panel.addView(TextView(this).apply {
+            text = "✕ ปิด"
+            setTextColor(Color.parseColor("#FFCDD2")); textSize = 14f; gravity = Gravity.CENTER
+            setPadding(0, dp(12), 0, dp(2))
+            setOnClickListener {
+                removeAskChips()
+                askFrame?.let { runCatching { it.recycle() } }; askFrame = null
+            }
+        })
+        val lp = WindowManager.LayoutParams(
+            (sw - dp(80)).coerceAtMost(dp(520)),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType(), WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.CENTER }
+        runCatching { windowManager.addView(panel, lp) }
+        askPanel = panel
+    }
+
+    private fun removeAskChips() {
+        askPanel?.let { runCatching { windowManager.removeView(it) } }
+        askPanel = null
+    }
+
+    private fun runAsk(question: String) {
+        val frame = askFrame
+        if (frame == null) { showAnswer("ไม่มีภาพ — กด 💡 ถาม ใหม่อีกครั้ง"); return }
+        if (busy) return
+        busy = true
+        val prefs = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
+        val engine = prefs.getString(MainActivity.KEY_ENGINE, "gemini").orEmpty().ifBlank { "gemini" }
+        val game = prefs.getString(MainActivity.KEY_GAME, "").orEmpty()
+        showAnswer("🤔 กำลังคิด…")
+
+        when (engine) {
+            "offline" -> {
+                showAnswer("⚠️ ผู้ช่วยต้องใช้ Gemini / Groq / DeepSeek\n(ออฟไลน์ไม่รองรับ) — สลับเอนจินในตั้งค่าก่อนนะ")
+                cleanupAsk()
+            }
+            "gemini" -> {
+                val key = prefs.getString(MainActivity.KEY_API, "").orEmpty()
+                val model = prefs.getString(MainActivity.KEY_MODEL, MainActivity.DEFAULT_MODEL)
+                    .orEmpty().ifBlank { MainActivity.DEFAULT_MODEL }
+                scope.launch {
+                    val out = withContext(Dispatchers.IO) {
+                        val b64 = encodeImage(frame)
+                        if (b64.isBlank()) "ERROR: เข้ารหัสภาพไม่ได้" else GeminiClient.ask(key, model, b64, question, game)
+                    }
+                    finishAsk(out)
+                }
+            }
+            else -> { // groq / deepseek → OCR อ่านจอ แล้วถามแบบข้อความ
+                val lang = prefs.getString(MainActivity.KEY_LANG, "latin").orEmpty().ifBlank { "latin" }
+                val url = if (engine == "groq") MainActivity.GROQ_URL else MainActivity.DEEPSEEK_URL
+                val key = prefs.getString(if (engine == "groq") MainActivity.KEY_GROQ else MainActivity.KEY_DEEPSEEK, "").orEmpty()
+                val model = if (engine == "groq")
+                    prefs.getString(MainActivity.KEY_MODEL_GROQ, MainActivity.GROQ_MODEL).orEmpty().ifBlank { MainActivity.GROQ_MODEL }
+                else
+                    prefs.getString(MainActivity.KEY_MODEL_DEEPSEEK, MainActivity.DEEPSEEK_MODEL).orEmpty().ifBlank { MainActivity.DEEPSEEK_MODEL }
+                try {
+                    getRecognizer(lang).process(InputImage.fromBitmap(frame, 0))
+                        .addOnSuccessListener { vt ->
+                            val screenText = vt.text.replace("\n", " ").trim()
+                            scope.launch {
+                                val out = withContext(Dispatchers.IO) { OpenAIClient.ask(url, key, model, question, game, screenText) }
+                                finishAsk(out)
+                            }
+                        }
+                        .addOnFailureListener { finishAsk("ERROR: อ่านข้อความจากจอไม่สำเร็จ") }
+                } catch (e: Exception) { finishAsk("ERROR: ${e.message}") }
+            }
+        }
+    }
+
+    private fun finishAsk(out: String) {
+        val clean = when {
+            out.startsWith("QUOTA:") -> "⚠️ โควต้าเต็ม ลองใหม่ภายหลัง หรือสลับเอนจิน"
+            out.startsWith("ERROR") -> "⚠️ ${out.removePrefix("ERROR: ")}"
+            else -> out
+        }
+        showAnswer(clean)
+        cleanupAsk()
+    }
+
+    private fun cleanupAsk() {
+        askFrame?.let { runCatching { it.recycle() } }
+        askFrame = null
+        busy = false
+    }
+
+    private fun encodeImage(src: Bitmap): String {
+        return try {
+            val maxDim = 1024
+            val big = maxOf(src.width, src.height)
+            val scaled = if (big > maxDim) {
+                val f = maxDim.toFloat() / big
+                Bitmap.createScaledBitmap(src, (src.width * f).toInt().coerceAtLeast(1), (src.height * f).toInt().coerceAtLeast(1), true)
+            } else src
+            val baos = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, 78, baos)
+            if (scaled != src) scaled.recycle()
+            Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+        } catch (e: Exception) { "" }
+    }
+
+    private fun showAnswer(msg: String) {
+        main.post {
+            try {
+                if (answerPanel == null) {
+                    val panel = LinearLayout(this).apply {
+                        orientation = LinearLayout.VERTICAL
+                        background = GradientDrawable().apply {
+                            setColor(Color.parseColor("#F21B1E26")); cornerRadius = dp(18).toFloat()
+                            setStroke(dp(2), Color.parseColor("#FF9800"))
+                        }
+                        setPadding(dp(16), dp(12), dp(16), dp(14))
+                    }
+                    val header = LinearLayout(this).apply {
+                        orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL
+                    }
+                    header.addView(TextView(this).apply {
+                        text = "💬 ผู้ช่วย AI"
+                        setTextColor(Color.parseColor("#FFB74D")); textSize = 15f
+                        setTypeface(typeface, android.graphics.Typeface.BOLD)
+                        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                    })
+                    header.addView(TextView(this).apply {
+                        text = "🔊"; textSize = 18f; setPadding(dp(10), dp(4), dp(12), dp(4))
+                        setOnClickListener { answerView?.text?.toString()?.let { speak(it, true) } }
+                    })
+                    header.addView(TextView(this).apply {
+                        text = "✕"; setTextColor(Color.WHITE); textSize = 18f; setPadding(dp(8), dp(4), dp(4), dp(4))
+                        setOnClickListener { removeAnswer() }
+                    })
+                    panel.addView(header)
+                    val scroll = ScrollView(this).apply {
+                        layoutParams = LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT, (sh * 0.5f).toInt()
+                        )
+                    }
+                    val tv = TextView(this).apply {
+                        setTextColor(Color.WHITE); textSize = 16f; setPadding(0, dp(8), 0, 0)
+                    }
+                    scroll.addView(tv)
+                    panel.addView(scroll)
+                    val lp = WindowManager.LayoutParams(
+                        (sw - dp(60)).coerceAtMost(dp(640)),
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        overlayType(), WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE, PixelFormat.TRANSLUCENT
+                    ).apply { gravity = Gravity.CENTER }
+                    windowManager.addView(panel, lp)
+                    answerPanel = panel; answerView = tv
+                }
+                answerView?.text = msg
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun removeAnswer() {
+        answerPanel?.let { runCatching { windowManager.removeView(it) } }
+        answerPanel = null; answerView = null
     }
 
     // ---------------- โหมดอัตโนมัติ ----------------
@@ -853,6 +1081,8 @@ class OverlayService : Service() {
         bar?.let { runCatching { windowManager.removeView(it) } }; bar = null
         regionView?.let { runCatching { windowManager.removeView(it) } }; regionView = null
         removeResult()
+        removeAskChips(); removeAnswer()
+        askFrame?.let { runCatching { it.recycle() } }; askFrame = null
     }
 
     override fun onDestroy() {

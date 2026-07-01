@@ -59,14 +59,50 @@ object GeminiClient {
             put("generationConfig", genConfig)
         }.toString()
 
+        return send(model, apiKey, body)
+    }
+
+    /**
+     * ผู้ช่วย AI — ส่ง "ภาพหน้าจอเกม" (base64 JPEG) + คำถาม ให้ Gemini vision ตอบเป็นไทย
+     */
+    fun ask(apiKey: String, model: String, imageBase64: String, question: String, gameContext: String = ""): String {
+        if (apiKey.isBlank()) return "ERROR: ยังไม่ได้ใส่ Gemini API Key"
+        if (imageBase64.isBlank()) return "ERROR: ไม่มีภาพหน้าจอ"
+
+        val ctx = if (gameContext.isBlank()) "" else "ผู้เล่นกำลังเล่นเกม \"$gameContext\".\n"
+        val prompt = """
+            คุณเป็นผู้ช่วยเล่นเกมที่เก่งและเป็นกันเอง ผู้เล่นแนบ "ภาพหน้าจอเกมปัจจุบัน" มาให้พร้อมคำถาม
+            ดูภาพให้ละเอียดแล้วตอบเป็นภาษาไทย สั้น กระชับ ตรงประเด็น อิงจากสิ่งที่เห็นในภาพเป็นหลัก
+            ถ้าข้อมูลในภาพไม่พอ/ไม่แน่ใจ ให้บอกตรงๆ ห้ามเดามั่ว
+            ${ctx}
+            คำถาม: $question
+        """.trimIndent()
+
+        val genConfig = JSONObject().put("temperature", 0.4)
+        val m = model.lowercase()
+        if (m.contains("2.5") || m.contains("flash-latest") || m.contains("latest")) {
+            genConfig.put("thinkingConfig", JSONObject().put("thinkingBudget", 0))
+        }
+
+        val body = JSONObject().apply {
+            put("contents", org.json.JSONArray().put(
+                JSONObject().put("parts", org.json.JSONArray()
+                    .put(JSONObject().put("inline_data", JSONObject()
+                        .put("mime_type", "image/jpeg").put("data", imageBase64)))
+                    .put(JSONObject().put("text", prompt))
+                )
+            ))
+            put("generationConfig", genConfig)
+        }.toString()
+
+        return send(model, apiKey, body)
+    }
+
+    /** ยิง generateContent + จัดการ error/429 + parse (ใช้ร่วมกันทั้ง translate และ ask) */
+    private fun send(model: String, apiKey: String, body: String): String {
         val url = "https://generativelanguage.googleapis.com/v1beta/models/" +
                 model.trim() + ":generateContent?key=" + apiKey.trim()
-
-        val request = Request.Builder()
-            .url(url)
-            .post(body.toRequestBody(JSON))
-            .build()
-
+        val request = Request.Builder().url(url).post(body.toRequestBody(JSON)).build()
         return try {
             client.newCall(request).execute().use { resp ->
                 val text = resp.body?.string().orEmpty()
@@ -77,7 +113,6 @@ object GeminiClient {
                     if (resp.code == 429) {
                         val sec = Regex("retry in ([0-9]+)").find(msg)?.groupValues?.get(1)
                         val wait = if (sec != null) "รออีก ~${sec}s" else "รอสักครู่"
-                        // QUOTA: = ตัวเรียกสามารถสลับไปลองโมเดลอื่นได้
                         return "QUOTA: ⏳ โควต้าเต็ม — $wait"
                     }
                     return "ERROR: (${resp.code}) $msg"
