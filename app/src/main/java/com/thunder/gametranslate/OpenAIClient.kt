@@ -16,7 +16,7 @@ object OpenAIClient {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(40, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
     private val JSON = "application/json; charset=utf-8".toMediaType()
@@ -34,6 +34,8 @@ object OpenAIClient {
         val prompt = """
             คุณเป็นนักแปลเกมมืออาชีพ แปลข้อความต่อไปนี้ที่ดึงมาจากหน้าจอเกมให้เป็นภาษาไทย
             โดยแปลแบบเป็นธรรมชาติ ลื่นไหล เข้าใจบริบท เหมือนบทพากย์/คำบรรยายในเกมจริง
+            ให้ประโยคสั้น กระชับที่สุดเท่าที่จะสื่อความหมายเดิมได้ครบ ตัดคำฟุ่มเฟือย/คำซ้ำซ้อนออก
+            แต่ห้ามตัดใจความสำคัญหรือทำให้ความหมายเปลี่ยน
             ห้ามอธิบายเพิ่ม ตอบกลับมาเฉพาะคำแปลภาษาไทยของข้อความล่าสุดเท่านั้น
 
             $contextLine${historyLine}ข้อความ:
@@ -43,6 +45,8 @@ object OpenAIClient {
         val body = JSONObject().apply {
             put("model", model)
             put("temperature", 0.3)
+            // จำกัดความยาวคำตอบตามความยาวข้อความต้นฉบับ กันโมเดลตอบยาวเกินจำเป็น → เร็วขึ้นชัดเจน
+            put("max_tokens", estimateMaxTokens(sourceText))
             put("messages", JSONArray().put(
                 JSONObject().put("role", "user").put("content", prompt)
             ))
@@ -70,6 +74,12 @@ object OpenAIClient {
             "ERROR: ${e.message}"
         }
     }
+
+    /**
+     * ประเมินจำนวน token คำตอบสูงสุดที่พอสำหรับข้อความต้นฉบับความยาวนี้ (ดูคำอธิบายเดียวกันใน GeminiClient)
+     */
+    private fun estimateMaxTokens(sourceText: String): Int =
+        (sourceText.length * 2).coerceIn(60, 400)
 
     /**
      * ผู้ช่วย AI โหมดข้อความ — ส่ง "ข้อความที่ OCR จากจอ" + คำถาม (สำหรับ Groq/DeepSeek ที่ไม่มี vision)

@@ -15,7 +15,7 @@ object GeminiClient {
 
     private val client = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
-        .readTimeout(40, TimeUnit.SECONDS)
+        .readTimeout(25, TimeUnit.SECONDS)
         .build()
 
     private val JSON = "application/json; charset=utf-8".toMediaType()
@@ -37,13 +37,18 @@ object GeminiClient {
         val prompt = """
             คุณเป็นนักแปลเกมมืออาชีพ แปลข้อความต่อไปนี้ที่ดึงมาจากหน้าจอเกมให้เป็นภาษาไทย
             โดยแปลแบบเป็นธรรมชาติ ลื่นไหล เข้าใจบริบท เหมือนบทพากย์/คำบรรยายในเกมจริง
+            ให้ประโยคสั้น กระชับที่สุดเท่าที่จะสื่อความหมายเดิมได้ครบ ตัดคำฟุ่มเฟือย/คำซ้ำซ้อนออก
+            แต่ห้ามตัดใจความสำคัญหรือทำให้ความหมายเปลี่ยน
             ห้ามอธิบายเพิ่ม ตอบกลับมาเฉพาะคำแปลภาษาไทยของข้อความล่าสุดเท่านั้น
 
             $contextLine${historyLine}ข้อความ:
             $sourceText
         """.trimIndent()
 
-        val genConfig = JSONObject().put("temperature", 0.3)
+        val genConfig = JSONObject()
+            .put("temperature", 0.3)
+            // จำกัดความยาวคำตอบตามความยาวข้อความต้นฉบับ กันโมเดลตอบยาวเกินจำเป็น → เร็วขึ้นชัดเจน
+            .put("maxOutputTokens", estimateMaxTokens(sourceText))
         // ปิดโหมด "คิด" (thinking) ในรุ่นที่รองรับ → ตอบเร็วขึ้นมาก เหมาะกับงานแปลสั้นๆ
         val m = model.lowercase()
         if (m.contains("2.5") || m.contains("flash-latest") || m.contains("latest")) {
@@ -121,6 +126,14 @@ object GeminiClient {
         }.toString()
         return send(model, apiKey, body)
     }
+
+    /**
+     * ประเมินจำนวน token คำตอบสูงสุดที่พอสำหรับข้อความต้นฉบับความยาวนี้
+     * (ภาษาไทยมักใช้ตัวอักษรมากกว่าอังกฤษต่อคำ จึงคูณเผื่อไว้) — คลิปไว้ไม่ให้แคบไปจนตัดคำ
+     * และไม่ให้กว้างไปจนโมเดลตอบยาวเกินจำเป็น (ซึ่งเป็นสาเหตุหลักที่ทำให้แปลช้า)
+     */
+    private fun estimateMaxTokens(sourceText: String): Int =
+        (sourceText.length * 2).coerceIn(60, 400)
 
     /** ยิง generateContent + จัดการ error/429 + parse (ใช้ร่วมกันทั้ง translate และ ask) */
     private fun send(model: String, apiKey: String, body: String): String {

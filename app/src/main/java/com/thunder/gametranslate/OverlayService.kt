@@ -170,7 +170,9 @@ class OverlayService : Service() {
             val mpm = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             projection = mpm.getMediaProjection(code, data)
             projection?.registerCallback(object : MediaProjection.Callback() {
-                override fun onStop() { cleanup() }
+                // ระบบเพิกถอนสิทธิ์จับภาพเอง เช่นตอนหมุนจอ/พับจอ (พบบ่อยในเครื่องจอพับ)
+                // ต่างจากตอนผู้ใช้กด "หยุด" เอง (onDestroy) — เคสนี้ต้องรีบขอสิทธิ์ใหม่ให้อัตโนมัติ
+                override fun onStop() { handleProjectionRevoked() }
             }, main)
 
             captureThread = HandlerThread("gt_capture").also { it.start() }
@@ -1366,6 +1368,25 @@ class OverlayService : Service() {
         } else {
             startForeground(1, notif)
         }
+    }
+
+    /**
+     * ระบบเพิกถอนสิทธิ์จับภาพเองกลางอากาศ (พบบ่อยตอนหมุนจอ/พับจอ บนเครื่องจอพับ)
+     * เก่าตอนนี้ปล่อยให้ปุ่มแปลหายเงียบๆ ไม่มีทางกลับมา — แก้ให้เก็บกวาดเฉพาะส่วนจับภาพ
+     * แล้วรีบเปิดหน้าเริ่มใหม่ให้ผู้ใช้กดยืนยันสิทธิ์อีกครั้งทันที (แท่งปุ่มจะกลับมาใน ~1-2 วิ)
+     */
+    private fun handleProjectionRevoked() {
+        if (restarting) return
+        runCatching { virtualDisplay?.release() }
+        runCatching { imageReader?.setOnImageAvailableListener(null, null) }
+        runCatching { imageReader?.close() }
+        virtualDisplay = null; imageReader = null
+        synchronized(frameLock) { latestFrame?.let { runCatching { it.recycle() } }; latestFrame = null }
+        projection = null
+        bar?.let { runCatching { windowManager.removeView(it) } }; bar = null
+        regionView?.let { runCatching { windowManager.removeView(it) } }; regionView = null
+        removeResult(); removeAskChips(); removeAskInput(); removeAnswer(); closeChat()
+        main.post { promptRestart() }
     }
 
     private fun cleanup() {
