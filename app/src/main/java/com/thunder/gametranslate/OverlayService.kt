@@ -94,9 +94,6 @@ class OverlayService : Service() {
     private var lastSeenText = ""
     private var lastTranslatedText = ""
 
-    // อ่านออกเสียง (TTS)
-    private var tts: android.speech.tts.TextToSpeech? = null
-    @Volatile private var ttsReady = false
 
     // พื้นที่แปล เก็บเป็นสัดส่วนของจอ (รองรับหมุนจอ) — default = แถบล่างกลางจอ
     private var fx = 0.15f
@@ -180,40 +177,11 @@ class OverlayService : Service() {
 
             setupCapture()
             showBar()
-            ensureTts()
         } catch (e: Exception) {
             toast("เริ่มไม่สำเร็จ: ${e.message}")
             stopSelf()
         }
         return START_NOT_STICKY
-    }
-
-    // ---------------- อ่านออกเสียง (TTS) ----------------
-
-    private fun ensureTts() {
-        if (tts != null) return
-        tts = android.speech.tts.TextToSpeech(this) { status ->
-            if (status == android.speech.tts.TextToSpeech.SUCCESS) {
-                runCatching { tts?.language = java.util.Locale("th", "TH") }
-                ttsReady = true
-            }
-        }
-    }
-
-    private fun speak(text: String, force: Boolean = false) {
-        val on = force || getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
-            .getBoolean(MainActivity.KEY_TTS, false)
-        if (!on || text.isBlank()) return
-        ensureTts()
-        val rate = getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
-            .getInt(MainActivity.KEY_TTS_RATE, 100) / 100f
-        val doSpeak = Runnable {
-            runCatching {
-                tts?.setSpeechRate(rate)
-                tts?.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, "gt")
-            }
-        }
-        if (ttsReady) doSpeak.run() else main.postDelayed(doSpeak, 600)
     }
 
     /** อ่านขนาดจอจริงปัจจุบัน (รองรับการหมุนจอ) */
@@ -657,10 +625,6 @@ class OverlayService : Service() {
                         layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     })
                     header.addView(TextView(this).apply {
-                        text = "🔊"; textSize = 18f; setPadding(dp(10), dp(4), dp(12), dp(4))
-                        setOnClickListener { answerView?.text?.toString()?.let { speak(it, true) } }
-                    })
-                    header.addView(TextView(this).apply {
                         text = "✕"; setTextColor(Color.WHITE); textSize = 18f; setPadding(dp(8), dp(4), dp(4), dp(4))
                         setOnClickListener { removeAnswer() }
                     })
@@ -1093,7 +1057,6 @@ class OverlayService : Service() {
         val cacheKey = "$engine|$game|$text"
         synchronized(cache) { cache[cacheKey] }?.let { cached ->
             showResult(cached)
-            speak(cached)
             recordHistory(text, cached)
             busy = false
             return
@@ -1106,7 +1069,7 @@ class OverlayService : Service() {
                 val out = withContext(Dispatchers.IO) { OfflineTranslator.translateBlocking(lang, text) }
                 if (!out.startsWith("ERROR")) {
                     synchronized(cache) { cache[cacheKey] = out }
-                    showResult(out); speak(out); recordHistory(text, out)
+                    showResult(out); recordHistory(text, out)
                 } else showResult("⚠️ ${out.removePrefix("ERROR: ")}")
                 busy = false
             }
@@ -1156,7 +1119,7 @@ class OverlayService : Service() {
                     showResult("⚠️ ${out.removePrefix("ERROR: ")}")
                 else -> {
                     synchronized(cache) { cache[cacheKey] = out }
-                    showResult(out); speak(out); recordHistory(text, out)
+                    showResult(out); recordHistory(text, out)
                 }
             }
             busy = false
@@ -1173,7 +1136,7 @@ class OverlayService : Service() {
                 out.startsWith("ERROR") -> showResult("⚠️ ${out.removePrefix("ERROR: ")}")
                 else -> {
                     synchronized(cache) { cache[cacheKey] = out }
-                    showResult(out); speak(out); recordHistory(text, out)
+                    showResult(out); recordHistory(text, out)
                 }
             }
             busy = false
@@ -1395,7 +1358,6 @@ class OverlayService : Service() {
         recognizers.values.forEach { runCatching { it.close() } }
         recognizers.clear()
         runCatching { OfflineTranslator.close() }
-        runCatching { tts?.stop(); tts?.shutdown() }; tts = null; ttsReady = false
         runCatching { virtualDisplay?.release() }
         runCatching { imageReader?.setOnImageAvailableListener(null, null) }
         runCatching { imageReader?.close() }
